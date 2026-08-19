@@ -1,0 +1,11 @@
+{
+  "drill": "limiter_fail_open",
+  "requests": 48,
+  "errors_5xx_or_connection": 0,
+  "limiter": {
+    "fail_open_count": 49,
+    "errors": 49
+  },
+  "passed": true,
+  "claim": "limiter store unreachable: traffic still served, fail_open_count climbing"
+}

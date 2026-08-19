@@ -62,9 +62,23 @@ if tokens >= cost then
 end
 
 redis.call('HMSET', key, 'tokens', tokens, 'updated_ms', now_ms)
+
 -- Expire after the time it would take to refill from empty, plus slack. Without
 -- this, every client that ever appears leaks a key forever.
-redis.call('PEXPIRE', key, math.ceil((capacity / rate) * 1000) + 10000)
+--
+-- Two details that only running the script reveals:
+--   1. PEXPIRE demands an INTEGER. math.ceil returns a float under Lua 5.1/LuaJIT,
+--      which Redis rejects with "value is not an integer or out of range".
+--      string.format('%d', ...) forces the integer representation.
+--   2. rate == 0 is a legitimate configuration (a hard quota that never refills)
+--      and would divide by zero here, producing inf. Fall back to a fixed TTL.
+local ttl_ms
+if rate > 0 then
+  ttl_ms = math.ceil((capacity / rate) * 1000) + 10000
+else
+  ttl_ms = 3600000
+end
+redis.call('PEXPIRE', key, string.format('%d', ttl_ms))
 
 return {allowed, tostring(tokens)}
 """
@@ -158,6 +172,10 @@ class RedisStore:
 
     def consume(self, key: str, capacity: float, rate: float, cost: float, now_ms: int) -> Decision:
         allowed, tokens = self._script(keys=[key], args=[capacity, rate, now_ms, cost])
+        # redis-py returns bytes for the string half of the reply; fakeredis and
+        # real Redis agree on this, so decode rather than assuming str.
+        if isinstance(tokens, bytes):
+            tokens = tokens.decode()
         tokens, allowed = float(tokens), bool(int(allowed))
         return Decision(allowed, tokens, _retry_after(allowed, cost, tokens, rate))
 

@@ -1,0 +1,20 @@
+{
+  "drill": "cache_stampede",
+  "concurrency": 64,
+  "requests": 19065,
+  "cache_entries_evicted": 1,
+  "errors_5xx_or_connection": 0,
+  "unexpected_status": 0,
+  "p99_ms_before_flush": 40.00944400060666,
+  "p99_ms_after_flush": 34.515471991617225,
+  "singleflight_collapsed": 15,
+  "cache": {
+    "hits": 19048,
+    "misses": 19,
+    "hit_ratio": 0.9990035139245818,
+    "size": 1,
+    "capacity": 50000
+  },
+  "passed": true,
+  "claim": "the cache was dropped under 64 concurrent clients and the service served every request without a 5xx"
+}

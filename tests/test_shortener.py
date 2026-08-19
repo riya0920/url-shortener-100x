@@ -287,3 +287,68 @@ def test_singleflight_does_not_serialise_unrelated_keys():
     t2 = threading.Thread(target=lambda: flight.do("fast", make("fast", 0.01)))
     t1.start(); t2.start(); t1.join(); t2.join()
     assert order[0] == "fast", "a slow key must not block an unrelated key"
+
+
+# --------------------------------------------------------------------------
+# the Redis Lua path -- exercised against fakeredis, which runs real Lua
+# --------------------------------------------------------------------------
+
+def _redis_limiter(capacity, rate, clock):
+    import fakeredis
+
+    from shortener.limiter import RedisStore
+
+    return RateLimiter(RedisStore(fakeredis.FakeStrictRedis()), capacity=capacity,
+                       refill_per_second=rate, clock=clock)
+
+
+def test_lua_script_executes_and_enforces_capacity():
+    """The Lua path is real code that can be wrong; running it found two bugs.
+
+    PEXPIRE rejects a float (math.ceil returns one under Lua 5.1), and a zero
+    refill rate divided by zero. Neither is visible by reading the script.
+    """
+    lim = _redis_limiter(10, 0, lambda: 1_000_000)
+    assert sum(lim.check("c").allowed for _ in range(20)) == 10
+
+
+def test_lua_refill_matches_elapsed_time():
+    now = {"ms": 1_000_000}
+    lim = _redis_limiter(10, 5, lambda: now["ms"])
+    for _ in range(10):
+        lim.check("c")
+    assert not lim.check("c").allowed
+    now["ms"] += 1000
+    assert sum(lim.check("c").allowed for _ in range(10)) == 5
+
+
+def test_lua_refill_is_capped_at_capacity():
+    now = {"ms": 1_000_000}
+    lim = _redis_limiter(10, 100, lambda: now["ms"])
+    lim.check("c")
+    now["ms"] += 3_600_000
+    assert sum(lim.check("c").allowed for _ in range(50)) == 10
+
+
+def test_both_backends_agree_exactly(tmp_path):
+    """Cross-backend equivalence: two implementations of one algorithm.
+
+    This is the test that keeps the SQLite path honest as a stand-in for Redis.
+    If they ever disagree, the local development experience stops predicting
+    production behaviour -- which is the whole reason for having two backends.
+    """
+    now = {"ms": 1_000_000}
+    clock = lambda: now["ms"]
+    sqlite_lim = RateLimiter(SqliteStore(str(tmp_path / "rl.db")), capacity=25, refill_per_second=7,
+                             clock=clock)
+    redis_lim = _redis_limiter(25, 7, clock)
+
+    seq = []
+    for step in range(120):
+        if step % 17 == 0:
+            now["ms"] += 500
+        a = sqlite_lim.check("client-a").allowed
+        b = redis_lim.check("client-a").allowed
+        seq.append((a, b))
+    mismatches = [(i, a, b) for i, (a, b) in enumerate(seq) if a != b]
+    assert not mismatches, "backends diverged at steps: %r" % mismatches[:5]
