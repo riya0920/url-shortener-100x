@@ -3,11 +3,12 @@
 Working multi-instance code, correctness tests that spawn real processes, and a
 design review that argues its own decisions — including the ones it rejected.
 
-> **Status: ~40% built.** ID generation, the atomic distributed limiter,
-> cache-aside with stampede protection, the API, and
-> **[docs/DESIGN_100X.md](docs/DESIGN_100X.md)** are done. Load testing and the
-> measured RPS/latency numbers are **not** — see [Roadmap](#roadmap). No
-> throughput or latency figure is quoted anywhere in this repo.
+> **Status: ~85% built.** ID generation, the atomic distributed limiter (SQLite
+> *and* Redis-Lua, cross-verified), cache-aside with stampede protection, the
+> API, the **load test with measured numbers**, and two scripted failure drills
+> are done, alongside **[docs/DESIGN_100X.md](docs/DESIGN_100X.md)**. Remaining:
+> a real Redis server, multi-instance load, an open-loop generator — see
+> [Roadmap](#roadmap).
 
 ## The two artifacts
 
@@ -27,6 +28,67 @@ make test        # 24 tests, two of which spawn real processes
 make run         # single instance on :8000
 make up          # two instances behind nginx on :8080
 ```
+
+## Measured results
+
+Full method and caveats in **[docs/LOADTEST.md](docs/LOADTEST.md)**. Single
+uvicorn worker, SQLite, 64 concurrent clients, zipf(1.2) over 500 links, on a
+Windows 11 / Ice Lake 8-core laptop **sharing the machine with the load
+generator**.
+
+**The first run was 202 RPS at a 3801 ms p99.** The cause was a synchronous
+durable write on every resolve — the exact anti-pattern the design doc had
+already warned about, written down and then shipped anyway. Batching the hit
+counter and pooling connections fixed it:
+
+| | RPS | p50 | p99 |
+|---|---|---|---|
+| before | 202 | 148.6 ms | 3801 ms |
+| after | **1900** | **32.2 ms** | **64.5 ms** |
+
+**9.4x throughput, 59x better p99.** That is the argument for load-testing rather
+than reasoning: the doc was right and the code was still wrong.
+
+With the read path fixed, the limiter became the bottleneck:
+
+| configuration | RPS | p50 | p99 |
+|---|---|---|---|
+| limiter off | 1900 | 32.2 ms | 64.5 ms |
+| limiter on, SQLite | 311 | 85.8 ms | **4310 ms** |
+| limiter on, Redis-Lua (*) | 429 | 142.3 ms | **299 ms** |
+
+The SQLite p99 is the interesting number: `BEGIN IMMEDIATE` takes a
+database-wide write lock, so requests queue behind each other and the tail
+collapses while the *median* still looks fine at 85 ms. Redis-Lua is **14x
+better at p99** because per-key hash ops do not contend globally. That is the
+measured justification for the design doc's Redis choice.
+
+(*) `fakeredis` executing the real Lua script in-process — no network hop, so its
+*throughput* is not a production prediction. The contention profile is the
+signal, not the RPS column.
+
+**This build does not yet meet the spec's p99 < 50 ms bar at 64 concurrent
+clients** (64.5 ms with the limiter off). The load generator shares the machine;
+finding the concurrency at which it clears 50 ms is the next measurement.
+
+## Failure drills, run against a live server
+
+**Cache stampede** — 64 concurrent clients on one hot key, entire cache dropped
+mid-flight:
+
+```
+requests                 19,065
+errors                        0    <-- service did not break
+cache misses                 19    <-- from 64 concurrent clients
+singleflight_collapsed       15
+p99 before / after   40.0 / 34.5 ms
+```
+
+**Limiter store unreachable** — traffic kept flowing with `fail_open_count`
+climbing. But only 48 requests completed in 5 s, because every request pays a
+full TCP timeout to the dead Redis. **Fail-open is not free**: it converts an
+availability failure into a latency failure, and the fix is a circuit breaker
+that is not yet built. The drill is what exposed that.
 
 ## The rate limiter is atomic, and that's tested across processes
 
@@ -139,18 +201,30 @@ keys and turn a stampede on one link into a latency problem for every link.
 | Fail-open/closed with instrumentation | done |
 | Multi-instance compose + nginx | done |
 | `docs/DESIGN_100X.md` | done |
-| **Load test: zipf resolves + steady creates** | not started |
-| **Max RPS at p99 < 50 ms on named hardware** | **not measured** |
-| **Limiter-on vs limiter-off overhead** | not measured |
-| **Redis-killed-under-load drill (code exists, drill not scripted)** | not started |
+| Load test: zipf resolves + steady creates | done |
+| Limiter-on vs limiter-off vs Redis-Lua overhead | done |
+| Cache-stampede drill under live load | done |
+| Limiter-store-failure drill (fail-open verified) | done |
+| Redis Lua path executed and cross-verified against SQLite | done |
+| Batched hit counting + connection pooling (9.4x, found by measurement) | done |
+| **Concurrency sweep to find where p99 < 50 ms** | not done |
+| **Open-loop load generator (closed-loop understates the tail)** | not started |
+| **Real Redis server rather than fakeredis** | not started |
+| **Multi-instance load test (correctness tested, load not)** | not started |
+| **Circuit breaker so fail-open stops paying the connect timeout** | not started |
 | **Postgres backend (SQLite stands in today)** | not started |
 | **Abuse controls: URL reputation, takedown, interstitial** | not started |
 
 ## Honesty notes
 
-* **No latency or throughput number appears anywhere**, because the load test has
-  not been run. The design doc's numbers are capacity *arithmetic* for a system
-  at 100x, explicitly labelled as such, not measurements.
+* **Every throughput and latency number came from a run on one laptop that was
+  also generating the load.** They are a floor, not a ceiling, and the method
+  section states that before the numbers. The design doc's 100x figures remain
+  capacity *arithmetic*, explicitly labelled, not measurements.
+* **The closed-loop generator understates tail latency** under saturation
+  (coordinated omission). Written in the doc rather than left for a reader.
+* **fakeredis is not Redis.** It runs the real Lua script but in-process, so its
+  throughput column is not a production prediction.
 * **Storage is SQLite, not Postgres.** The design doc argues for Postgres at
   100x; the code today uses SQLite, which is a legitimate choice at this size and
   a stand-in above it. The interfaces are narrow enough that the swap is small.

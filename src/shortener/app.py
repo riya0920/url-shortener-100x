@@ -12,25 +12,48 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field, field_validator
 
+from .counters import HitCounter
 from .ids import SnowflakeGenerator
-from .limiter import FailOpenLimiter, RateLimiter, SqliteStore
+from .limiter import FailOpenLimiter, RateLimiter, RedisStore, SqliteStore
 from .store import LinkStore, LruCache, SingleFlight
 
 DATA = os.environ.get("SHORTENER_DATA", "./data")
 INSTANCE_ID = int(os.environ.get("INSTANCE_ID", "0"))
 CAPACITY = float(os.environ.get("RATE_CAPACITY", "60"))
 REFILL = float(os.environ.get("RATE_REFILL_PER_S", "10"))
+# Lets the load test measure the limiter's cost by running the identical binary
+# with enforcement off. Comparing two different builds would confound the
+# measurement with whatever else differed between them.
+LIMITER_ENABLED = os.environ.get("LIMITER_ENABLED", "1") != "0"
+# sqlite | redis | fakeredis. The load test measures all three, because the
+# limiter turned out to be the dominant cost and "which backend" is therefore a
+# throughput decision rather than a deployment detail.
+LIMITER_BACKEND = os.environ.get("LIMITER_BACKEND", "sqlite")
 
 os.makedirs(DATA, exist_ok=True)
 
 links = LinkStore(os.path.join(DATA, "links.db"))
-limiter = FailOpenLimiter(
-    RateLimiter(SqliteStore(os.path.join(DATA, "limiter.db")), CAPACITY, REFILL),
-    fail_open=True,
-)
+def _build_limiter_store():
+    if LIMITER_BACKEND == "redis":
+        import redis as _redis
+
+        return RedisStore(_redis.Redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379/0")))
+    if LIMITER_BACKEND == "fakeredis":
+        # An in-process Redis implementation that executes the SAME Lua script.
+        # It is not a substitute for a real Redis benchmark -- there is no network
+        # hop and no separate process -- but it does exercise the actual script
+        # and shows the cost of the algorithm without SQLite's write lock.
+        import fakeredis
+
+        return RedisStore(fakeredis.FakeStrictRedis())
+    return SqliteStore(os.path.join(DATA, "limiter.db"))
+
+
+limiter = FailOpenLimiter(RateLimiter(_build_limiter_store(), CAPACITY, REFILL), fail_open=True)
 ids = SnowflakeGenerator(INSTANCE_ID)
 cache = LruCache(capacity=50_000)
 flight = SingleFlight()
+hits = HitCounter(links, flush_interval=2.0)
 
 app = FastAPI(title="url-shortener", version="0.4.0")
 
@@ -62,6 +85,8 @@ def client_id(request: Request) -> str:
 
 
 def enforce_limit(request: Request):
+    if not LIMITER_ENABLED:
+        return
     decision = limiter.check(client_id(request))
     if not decision.allowed:
         raise HTTPException(
@@ -80,12 +105,40 @@ def healthz():
     return {"status": "ok", "instance": INSTANCE_ID}
 
 
+@app.post("/admin/reset-metrics")
+def reset_metrics():
+    """Zero the counters so a load test reports its own window, not the seeding
+    phase that preceded it."""
+    cache.hits = 0
+    cache.misses = 0
+    flight.collapsed = 0
+    hits.recorded = 0
+    hits.flushes = 0
+    limiter.fail_open_count = 0
+    limiter.error_count = 0
+    return {"reset": True}
+
+
+@app.post("/admin/flush-cache")
+def flush_cache():
+    """Drop the entire cache. Used by the stampede drill: every in-flight
+    request for a hot key misses at the same instant, which is exactly the
+    thundering herd SingleFlight exists to collapse."""
+    before = len(cache._data)
+    with cache._lock:
+        cache._data.clear()
+    return {"evicted": before}
+
+
 @app.get("/metrics")
 def metrics():
     return {
         "instance": INSTANCE_ID,
+        "limiter_enabled": LIMITER_ENABLED,
+        "limiter_backend": LIMITER_BACKEND,
         "cache": cache.stats(),
         "singleflight_collapsed": flight.collapsed,
+        "hit_counter": hits.stats(),
         "limiter": {"fail_open_count": limiter.fail_open_count, "errors": limiter.error_count},
         "links": links.count(),
     }
@@ -129,5 +182,14 @@ def resolve(code: str, request: Request):
     if target is None:
         raise HTTPException(status_code=404, detail="unknown or expired short code")
 
-    links.record_hit(code)
+    # In-memory increment; flushed in batches. One durable write per resolve
+    # is what capped the first measured load test at 202 RPS.
+    hits.record(code)
     return RedirectResponse(url=target, status_code=307)
+
+
+@app.on_event("shutdown")
+def _flush_counters():
+    """Flush pending hit counts on a clean shutdown, so only a hard CRASH can
+    lose them -- which is the bounded-loss trade the counter documents."""
+    hits.flush()
