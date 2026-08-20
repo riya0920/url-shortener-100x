@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field, field_validator
 
+from .breaker import BreakerGuardedLimiter
 from .counters import HitCounter
 from .ids import SnowflakeGenerator
 from .limiter import FailOpenLimiter, RateLimiter, RedisStore, SqliteStore
@@ -49,7 +50,15 @@ def _build_limiter_store():
     return SqliteStore(os.path.join(DATA, "limiter.db"))
 
 
-limiter = FailOpenLimiter(RateLimiter(_build_limiter_store(), CAPACITY, REFILL), fail_open=True)
+# Breaker-guarded rather than bare fail-open. The fail-open drill showed that
+# honouring the availability guarantee cost a full TCP timeout per request when
+# the store was dead; the breaker keeps the guarantee and drops the cost.
+limiter = BreakerGuardedLimiter(
+    RateLimiter(_build_limiter_store(), CAPACITY, REFILL),
+    fail_open=True,
+    failure_threshold=int(os.environ.get("BREAKER_THRESHOLD", "5")),
+    cooldown_s=float(os.environ.get("BREAKER_COOLDOWN_S", "5")),
+)
 ids = SnowflakeGenerator(INSTANCE_ID)
 cache = LruCache(capacity=50_000)
 flight = SingleFlight()
@@ -139,7 +148,7 @@ def metrics():
         "cache": cache.stats(),
         "singleflight_collapsed": flight.collapsed,
         "hit_counter": hits.stats(),
-        "limiter": {"fail_open_count": limiter.fail_open_count, "errors": limiter.error_count},
+        "limiter": limiter.stats(),
         "links": links.count(),
     }
 

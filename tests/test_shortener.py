@@ -352,3 +352,120 @@ def test_both_backends_agree_exactly(tmp_path):
         seq.append((a, b))
     mismatches = [(i, a, b) for i, (a, b) in enumerate(seq) if a != b]
     assert not mismatches, "backends diverged at steps: %r" % mismatches[:5]
+
+
+# --------------------------------------------------------------------------
+# circuit breaker -- the gap the fail-open drill exposed
+# --------------------------------------------------------------------------
+
+def test_breaker_opens_after_consecutive_failures():
+    from shortener.breaker import CircuitBreaker, CircuitOpenError, CircuitState
+
+    now = {"t": 0.0}
+    b = CircuitBreaker(failure_threshold=3, cooldown_s=5.0, clock=lambda: now["t"])
+
+    def boom():
+        raise ConnectionError("store is gone")
+
+    for _ in range(3):
+        with pytest.raises(ConnectionError):
+            b.call(boom)
+    assert b.state is CircuitState.OPEN
+    # Now calls short-circuit instead of attempting and timing out.
+    with pytest.raises(CircuitOpenError):
+        b.call(boom)
+    assert b.stats()["short_circuited"] == 1
+
+
+def test_a_single_success_resets_the_failure_run():
+    """The threshold counts CONSECUTIVE failures; an intermittent blip must not trip it."""
+    from shortener.breaker import CircuitBreaker, CircuitState
+
+    b = CircuitBreaker(failure_threshold=3)
+
+    def boom():
+        raise ConnectionError("blip")
+
+    for _ in range(2):
+        with pytest.raises(ConnectionError):
+            b.call(boom)
+    b.call(lambda: "ok")
+    with pytest.raises(ConnectionError):
+        b.call(boom)
+    assert b.state is CircuitState.CLOSED
+
+
+def test_half_open_lets_exactly_one_probe_through():
+    """A burst at a service that just recovered is how you knock it over again."""
+    from shortener.breaker import CircuitBreaker, CircuitState
+
+    now = {"t": 0.0}
+    b = CircuitBreaker(failure_threshold=1, cooldown_s=5.0, clock=lambda: now["t"])
+    b.record_failure()
+    assert b.state is CircuitState.OPEN
+
+    now["t"] = 6.0
+    assert b.allow(), "the first caller after the cooldown is the probe"
+    assert b.state is CircuitState.HALF_OPEN
+    assert not b.allow(), "everyone else waits while the probe is in flight"
+    assert not b.allow()
+
+
+def test_a_failed_probe_reopens_and_restarts_the_cooldown():
+    from shortener.breaker import CircuitBreaker, CircuitState
+
+    now = {"t": 0.0}
+    b = CircuitBreaker(failure_threshold=1, cooldown_s=5.0, clock=lambda: now["t"])
+    b.record_failure()
+    now["t"] = 6.0
+    assert b.allow()
+    b.record_failure()                       # probe failed
+    assert b.state is CircuitState.OPEN
+    assert not b.allow(), "cooldown must restart, not resume"
+    now["t"] = 12.0
+    assert b.allow()
+
+
+def test_a_successful_probe_closes_the_circuit():
+    from shortener.breaker import CircuitBreaker, CircuitState
+
+    now = {"t": 0.0}
+    b = CircuitBreaker(failure_threshold=1, cooldown_s=5.0, clock=lambda: now["t"])
+    b.record_failure()
+    now["t"] = 6.0
+    b.allow()
+    b.record_success()
+    assert b.state is CircuitState.CLOSED
+    assert b.allow()
+
+
+def test_guarded_limiter_still_fails_open_but_stops_calling_the_dead_store():
+    """The availability guarantee is unchanged; the latency cost of it collapses."""
+    from shortener.breaker import BreakerGuardedLimiter
+
+    calls = {"n": 0}
+
+    class DeadStore:
+        def consume(self, *a, **k):
+            calls["n"] += 1
+            raise ConnectionError("redis is gone")
+
+    guarded = BreakerGuardedLimiter(RateLimiter(DeadStore()), fail_open=True,
+                                    failure_threshold=3, cooldown_s=60.0)
+    allowed = sum(guarded.check("c").allowed for _ in range(50))
+
+    assert allowed == 50, "fail-open behaviour must be unchanged"
+    assert calls["n"] == 3, "after the breaker trips, the dead store is not called again"
+    assert guarded.stats()["breaker"]["short_circuited"] > 0
+
+
+def test_guarded_limiter_can_fail_closed_too():
+    from shortener.breaker import BreakerGuardedLimiter
+
+    class DeadStore:
+        def consume(self, *a, **k):
+            raise ConnectionError("gone")
+
+    guarded = BreakerGuardedLimiter(RateLimiter(DeadStore()), fail_open=False,
+                                    failure_threshold=2, cooldown_s=60.0)
+    assert not any(guarded.check("c").allowed for _ in range(20))
