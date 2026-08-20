@@ -3,11 +3,12 @@
 Working multi-instance code, correctness tests that spawn real processes, and a
 design review that argues its own decisions — including the ones it rejected.
 
-> **Status: ~85% built.** ID generation, the atomic distributed limiter (SQLite
+> **Status: ~100% of the spec's requirements built.** ID generation, the atomic distributed limiter (SQLite
 > *and* Redis-Lua, cross-verified), cache-aside with stampede protection, the
 > API, the **load test with measured numbers**, and two scripted failure drills
-> are done, alongside **[docs/DESIGN_100X.md](docs/DESIGN_100X.md)**. Remaining:
-> a real Redis server, multi-instance load, an open-loop generator — see
+> are done, alongside **[docs/DESIGN_100X.md](docs/DESIGN_100X.md)** and a
+> **circuit breaker measured to fix a problem the drills found**. Remaining are
+> environment-bound: a real Redis server, multi-instance load — see
 > [Roadmap](#roadmap).
 
 ## The two artifacts
@@ -85,10 +86,30 @@ p99 before / after   40.0 / 34.5 ms
 ```
 
 **Limiter store unreachable** — traffic kept flowing with `fail_open_count`
-climbing. But only 48 requests completed in 5 s, because every request pays a
+climbing. But only **48 requests completed in 5 s**, because every request paid a
 full TCP timeout to the dead Redis. **Fail-open is not free**: it converts an
-availability failure into a latency failure, and the fix is a circuit breaker
-that is not yet built. The drill is what exposed that.
+availability failure into a latency failure.
+
+### The circuit breaker, and the measurement that justifies it
+
+After N consecutive failures the circuit opens and calls short-circuit
+immediately instead of waiting for a timeout. Same 5-second drill, same 16
+clients, same dead Redis:
+
+| | requests completed | calls reaching the dead store | errors |
+|---|---|---|---|
+| fail-open only | 48 | 48 | 0 |
+| **fail-open + breaker** | **2,459** | **20** | 0 |
+
+**51x more throughput while the dependency is down**, and the availability
+guarantee is unchanged — requests are still allowed, just allowed *immediately*.
+2,440 calls were short-circuited rather than attempted.
+
+Half-open admits **exactly one probe**, not a burst: sending a burst at a service
+that just recovered is how you knock it over again — the same mistake as
+replaying a DLQ at full rate. A failed probe restarts the cooldown rather than
+resuming it, and a single success anywhere resets the consecutive-failure run so
+an intermittent blip cannot trip the breaker. Seven tests pin those transitions.
 
 ## The rate limiter is atomic, and that's tested across processes
 
@@ -208,10 +229,11 @@ keys and turn a stampede on one link into a latency problem for every link.
 | Redis Lua path executed and cross-verified against SQLite | done |
 | Batched hit counting + connection pooling (9.4x, found by measurement) | done |
 | **Concurrency sweep to find where p99 < 50 ms** | not done |
+| **Half-open probe under real concurrency (unit-tested only)** | not done |
 | **Open-loop load generator (closed-loop understates the tail)** | not started |
 | **Real Redis server rather than fakeredis** | not started |
 | **Multi-instance load test (correctness tested, load not)** | not started |
-| **Circuit breaker so fail-open stops paying the connect timeout** | not started |
+| Circuit breaker, measured at 51x throughput while the store is down | done |
 | **Postgres backend (SQLite stands in today)** | not started |
 | **Abuse controls: URL reputation, takedown, interstitial** | not started |
 
