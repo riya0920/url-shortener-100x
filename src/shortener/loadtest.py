@@ -107,8 +107,17 @@ async def resolve_worker(session, base: str, keys: list, stop_at: float, results
 
 async def create_worker(session, base: str, stop_at: float, rate_per_s: float, results: Results,
                         api_key: str, start_after: float):
-    """Steady, low-rate creates running alongside the read load."""
-    interval = 1.0 / max(rate_per_s, 0.001)
+    """Steady, low-rate creates running alongside the read load.
+
+    `rate_per_s <= 0` means "no writes", and it has to return rather than pick a
+    very long interval. The clamp used to be `max(rate, 0.001)`, which turned
+    --create-rps 0 into one request every 1000 seconds -- and since the run ends
+    with `gather`, the whole load test then blocked for those 1000 seconds. A
+    read-only run looked like a hang.
+    """
+    if rate_per_s <= 0:
+        return
+    interval = 1.0 / rate_per_s
     i = 0
     while time.perf_counter() < stop_at:
         t0 = time.perf_counter()

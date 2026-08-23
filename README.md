@@ -25,7 +25,9 @@ design review that argues its own decisions — including the ones it rejected.
 
 ```bash
 pip install -r requirements.txt
-make test        # 24 tests, two of which spawn real processes
+make test        # 61 tests, two of which spawn real processes
+make sweep       # open-loop capacity sweep, fresh server per point
+make compare     # open loop vs closed loop, paired
 make run         # single instance on :8000
 make up          # two instances behind nginx on :8080
 ```
@@ -210,7 +212,7 @@ keys and turn a stampede on one link into a latency problem for every link.
   if it fires, two instances share an `INSTANCE_ID` and hiding that would be
   worse than the error.
 
-## Roadmap (the remaining ~60%)
+## Roadmap
 
 | Milestone | Status |
 |---|---|
@@ -228,16 +230,180 @@ keys and turn a stampede on one link into a latency problem for every link.
 | Limiter-store-failure drill (fail-open verified) | done |
 | Redis Lua path executed and cross-verified against SQLite | done |
 | Batched hit counting + connection pooling (9.4x, found by measurement) | done |
-| **Concurrency sweep to find where p99 < 50 ms** | not done |
-| **Half-open probe under real concurrency (unit-tested only)** | not done |
-| **Open-loop load generator (closed-loop understates the tail)** | not started |
-| **Real Redis server rather than fakeredis** | not started |
-| **Multi-instance load test (correctness tested, load not)** | not started |
+| Open-loop offered-rate sweep: 1,210 rps within a 50 ms p99 | done |
+| Half-open probe under 64 racing threads: exactly 1 admitted | done |
+| Open-loop generator, Poisson arrivals, latency from scheduled time | done |
+| Paired open-vs-closed comparison: closed loop is 24x optimistic | done |
+| **Real Redis server rather than fakeredis** | not possible here: no Redis server |
+| **Multi-instance load test (correctness tested, load not)** | not possible here: needs a second machine |
 | Circuit breaker, measured at 51x throughput while the store is down | done |
-| **Postgres backend (SQLite stands in today)** | not started |
-| **Abuse controls: URL reputation, takedown, interstitial** | not started |
+| **Postgres backend (SQLite stands in today)** | not possible here: no Postgres server |
+| Abuse controls: reputation, SSRF refusal, interstitial, takedown | done |
+| **Cross-instance cache invalidation for takedown** | not implemented, and reported as such |
+
+## The closed-loop number was 24x too optimistic
+
+Every load figure above this line came from a **closed-loop** generator: each
+worker waits for its response before issuing the next request. That design has one
+fatal property — when the server slows down, the generator slows down with it.
+Offered load becomes a function of service time, the queue never builds, and the
+reported tail is the tail of a workload that politely backed off. This is
+**coordinated omission**.
+
+`src/shortener/openloop.py` is the fix. Arrivals are a **Poisson process** at a
+fixed rate, fired whether or not anything is outstanding, and **latency is charged
+from the scheduled time** rather than from when the request actually went out.
+
+### The measurement
+
+Same server process, ~2,000 rps through both arms, five paired runs, a fresh
+server per run:
+
+| generator | achieved | p99 |
+|---|---|---|
+| closed loop, 64 workers | 2,050–2,750 rps | **34–43 ms** |
+| open loop, 2,000 rps offered | 1,991–2,030 rps | **110–1,533 ms** (median 1,038) |
+
+**Median ratio: 24x.** The closed loop reports a 43 ms tail for a workload whose
+real tail is a full second — and it does so while pushing *more* throughput, which
+is what makes the number so persuasive and so wrong.
+
+### The capacity curve, from the open loop
+
+Fresh server process and fresh database per point, three repeats, 10 s each:
+
+| offered | achieved | p50 | p99 (3 runs) | within 50 ms? |
+|---|---|---|---|---|
+| 400 | 394 | 2.3 ms | 9 ms (9, 9, 11) | yes |
+| 800 | 818 | 4.9 ms | 26 ms (18, 26, 26) | yes |
+| **1,200** | **1,210** | **11.4 ms** | **37 ms** (33, 37, 44) | **yes** |
+| 1,600 | 1,610 | 31.3 ms | 81 ms (59, 81, 94) | no |
+| 2,000 | 2,012 | 773 ms | 1,077 ms (969, 1077, 1696) | no |
+
+**Max sustainable throughput within a 50 ms p99: ~1,210 rps.** The closed-loop
+runs claimed 1,900–2,800. The knee is sharp — between 1,600 and 2,000 offered rps
+the tail moves from 81 ms to 1,077 ms, which is the queueing cliff you cannot see
+from inside a closed loop because the loop cannot climb it.
+
+### Four things the generator got wrong first
+
+Every one of these produced a plausible number before it was caught.
+
+* **`--create-rps 0` hung the load test for 1,000 seconds.** The write-worker
+  clamped its rate with `max(rate, 0.001)`, turning "no writes" into one request
+  every thousand seconds — and since the run ends on `gather`, a read-only run
+  looked like a hang. Fixed by returning instead of clamping.
+* **An unbounded connection pool is not more open-loop, it is a different
+  benchmark.** The first version left the connector unlimited on the theory that
+  any limit reintroduces the closed loop. It does not. 400 rps offered against a
+  service that does 1,900 closed-loop produced a **6.5 second median**, because
+  several hundred simultaneous TCP setups against one uvicorn worker is not the
+  experiment. Waiting for a free connection is real queueing and stays in the
+  number; latency is charged from the scheduled time either way.
+* **Windows' timer granularity is 15.6 ms**, and `asyncio.sleep` inherits it. At
+  400 rps the mean gap between arrivals is 2.5 ms, so every sleep overshot by an
+  order of magnitude: measured p99 client drift was **13.8 ms against a p99
+  latency of 23.5 ms — 59% of the number was the harness**. `timeBeginPeriod(1)`
+  plus a one-millisecond spin took drift to 0.93 ms, 10% of p99. Every run now
+  reports `client_drift_share_of_p99` and marks itself invalid above 25%.
+* **Sizing one arm from the other arm's result couples them.** The closed-loop
+  arm was originally sized by Little's law from the open-loop p50; when a
+  contended run produced a 3-second p50, the formula asked for 1,371 workers and
+  the closed-loop arm measured client thrash. Fixed concurrency instead — and the
+  claim is stronger without matching, because the closed loop reports a better
+  tail while pushing more work.
+
+### And one that was not the service's fault
+
+The first sweep sloped downward regardless of offered rate: by the twentieth run
+the service did 287 rps where a fresh process did 2,798, and it never recovered.
+Two hypotheses were tested rather than argued. `PRAGMA wal_checkpoint(TRUNCATE)`
+took a 4.1 MB write-ahead log to zero bytes and changed nothing. Restarting the
+process against the *same* database files restored performance instantly. So not
+the WAL and not the data — the cause was that **every previous run had left its
+server process alive**, and eight cores were carrying six orphaned uvicorn
+processes. Cumulative host contention wearing the costume of a server-side leak,
+and it was convincing: monotone, reproducible, and immune to both database
+explanations.
+
+The fix is not a workaround. A benchmark that leaves processes running measures
+its own history, so `sweep-isolated` tears every server down in a `finally` and
+records host CPU next to each measurement, which makes a contended run visible in
+the data rather than reconstructed afterwards.
+
+```bash
+make sweep      # fresh server + fresh DB per point, 3 repeats
+make compare    # open vs closed loop, paired, 5 runs
+```
+
+## Abuse controls
+
+A shortener is an open redirector with a database. Every one of them becomes a
+phishing channel, so this is not an optional feature.
+
+**Policy runs at create, not at resolve.** Once per link instead of once per click
+keeps it off a path that has to run at a thousand requests a second. The cost is
+real and stated: an abuser can probe the blocklist. Takedown is what covers it.
+
+Three outcomes, not two:
+
+| destination | outcome | why |
+|---|---|---|
+| `https://bit.ly/x` (or `evil.bit.ly`) | **refuse** | chaining a shortener hides the destination from every downstream scanner — the most common evasion, and a two-line fix |
+| `http://169.254.169.254/latest/meta-data/` | **refuse** | a redirector that emits redirects into private space is an SSRF pivot for anything that follows them server-side, which is most link previewers |
+| `https://promo.xyz/free` | **interstitial** | most suspicious links are not provably malicious; a hard block on a maybe is a support ticket, an interstitial costs the attacker their automation |
+| anything else | allow | |
+
+The suffix match is on labels, so `evil.bit.ly` matches `bit.ly` and `notbit.ly`
+does **not** — a blocklist that a single extra label defeats is not a blocklist,
+and a naive `endswith` gives you both bugs at once.
+
+The interstitial escapes the destination (rendering an attacker-supplied URL raw
+is stored XSS on your own domain, handed to you by whoever made the link) and
+**fetches nothing from it** — not a favicon, not a preview image. One fetch
+confirms to the attacker that the link was opened.
+
+### Takedown, and the part that is not solved
+
+`POST /admin/takedown/{code}` marks the code, purges it from *this* instance's
+cache, and is checked **before** the cache on the read path — checking after would
+let a hot code keep redirecting from cache after it was withdrawn, which is the
+entire failure mode a takedown exists to prevent.
+
+Across instances it does not work, and the response says so rather than reporting
+success:
+
+```json
+{"code": "G2HWDGUZIe", "reason": "phishing", "local_cache_purged": true,
+ "propagation": "complete on this instance only; other instances may serve this
+  code from their own caches until eviction (UNBOUNDED: the cache has no TTL)"}
+```
+
+That is a real gap with a real design in `docs/DESIGN_100X.md` (pub/sub
+invalidation) and no implementation here. Reporting `{"status": "ok"}` would have
+been one line shorter and a lie.
+
+### The half-open probe, now tested under threads
+
+The circuit breaker's "exactly one probe" rule was only ever checked
+sequentially, which is where that class of invariant always holds. The new test
+puts **64 threads on a barrier** and releases them the instant the cooldown
+expires: exactly 1 is admitted, 63 are short-circuited. A service that has just
+fallen over should not receive 64 simultaneous probes, and a for-loop cannot tell
+you whether it will.
 
 ## Honesty notes
+
+* **Every throughput number here shares a machine with its own load generator.**
+  The open-loop runs mark themselves invalid when the generator's scheduling
+  backlog exceeds 25% of the measured p99, which catches the harness being the
+  bottleneck; they cannot catch CPU contention between the two processes. Treat
+  the absolute ceiling as a shape, not a capacity.
+* **The 24x coordinated-omission ratio is the robust part.** It is a paired
+  measurement on the same server process seconds apart, so contention moves both
+  arms together. The absolute rps figures are the fragile part.
+* **Takedown does not propagate across instances**, and the API says so on every
+  call rather than returning success.
 
 * **Every throughput and latency number came from a run on one laptop that was
   also generating the load.** They are a floor, not a ceiling, and the method

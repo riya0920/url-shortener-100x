@@ -9,13 +9,14 @@ import os
 import time
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field, field_validator
 
 from .breaker import BreakerGuardedLimiter
 from .counters import HitCounter
 from .ids import SnowflakeGenerator
 from .limiter import FailOpenLimiter, RateLimiter, RedisStore, SqliteStore
+from .abuse import ALLOW, INTERSTITIAL, REFUSE, ReputationPolicy, TakedownList, render_interstitial
 from .store import LinkStore, LruCache, SingleFlight
 
 DATA = os.environ.get("SHORTENER_DATA", "./data")
@@ -59,6 +60,17 @@ limiter = BreakerGuardedLimiter(
     failure_threshold=int(os.environ.get("BREAKER_THRESHOLD", "5")),
     cooldown_s=float(os.environ.get("BREAKER_COOLDOWN_S", "5")),
 )
+# Abuse controls. ALLOW_PRIVATE_TARGETS exists because tests and the local demo
+# shorten http://localhost URLs; in production it must stay off, or the service
+# is an SSRF pivot for anything that follows redirects server-side.
+policy = ReputationPolicy(allow_private=os.environ.get("ALLOW_PRIVATE_TARGETS", "0") == "1")
+takedowns = TakedownList()
+# Codes that resolve through an interstitial instead of a 307. In-process on
+# purpose and wrong on purpose: like the LRU it does not survive a restart and
+# does not cross instances, and it is listed with the cache-invalidation gap
+# rather than pretended away.
+interstitials = {}
+
 ids = SnowflakeGenerator(INSTANCE_ID)
 cache = LruCache(capacity=50_000)
 flight = SingleFlight()
@@ -87,6 +99,8 @@ class CreateResponse(BaseModel):
     code: str
     target: str
     expires_ms: int | None
+    interstitial: bool = False
+    reason: str = "ok"
 
 
 def client_id(request: Request) -> str:
@@ -156,6 +170,16 @@ def metrics():
 @app.post("/links", response_model=CreateResponse, status_code=201)
 def create_link(body: CreateRequest, request: Request):
     enforce_limit(request)
+
+    # Policy runs at CREATE, not at resolve. Once per link rather than once per
+    # click keeps it off the hot path; the cost is that an abuser can probe the
+    # blocklist, which is what takedown is for.
+    verdict = policy.evaluate(body.target)
+    if verdict.action == REFUSE:
+        raise HTTPException(status_code=422, detail={"error": "destination refused",
+                                                     "reason": verdict.reason,
+                                                     "host": verdict.host})
+
     code = ids.next_code()
     try:
         link = links.create(code, body.target, body.ttl_seconds)
@@ -164,13 +188,23 @@ def create_link(body: CreateRequest, request: Request):
         # ever fires, two instances share an INSTANCE_ID and that is an ops bug
         # worth a 500 rather than a silent retry that would hide it.
         raise HTTPException(status_code=500, detail="short code collision -- check INSTANCE_ID uniqueness")
-    return CreateResponse(code=link.code, target=link.target, expires_ms=link.expires_ms)
+    if verdict.action == INTERSTITIAL:
+        interstitials[link.code] = verdict.reason
+    return CreateResponse(code=link.code, target=link.target, expires_ms=link.expires_ms,
+                          interstitial=verdict.action == INTERSTITIAL, reason=verdict.reason)
 
 
 @app.get("/{code}")
 def resolve(code: str, request: Request):
     enforce_limit(request)
     now_ms = int(time.time() * 1000)
+
+    # Takedown is checked BEFORE the cache. Checking after would mean a hot code
+    # keeps redirecting from cache after it has been withdrawn, which is the
+    # entire failure mode a takedown exists to prevent.
+    if code in takedowns:
+        raise HTTPException(status_code=410, detail={"error": "link withdrawn",
+                                                     "reason": takedowns.reason(code)})
 
     target = cache.get(code, now_ms)
     if target is None:
@@ -194,7 +228,35 @@ def resolve(code: str, request: Request):
     # In-memory increment; flushed in batches. One durable write per resolve
     # is what capped the first measured load test at 202 RPS.
     hits.record(code)
+
+    if code in interstitials:
+        # 200, not a redirect: the whole point is that the browser stops here and
+        # the user sees the destination before anything from it loads.
+        return HTMLResponse(render_interstitial(target, interstitials[code]), status_code=200)
+
     return RedirectResponse(url=target, status_code=307)
+
+
+@app.post("/admin/takedown/{code}")
+def takedown(code: str, reason: str = "policy violation"):
+    """Withdraw a link.
+
+    Returns the propagation status honestly. On a single instance the local cache
+    purge closes the window; across instances it does not, and the response says
+    so rather than reporting success.
+    """
+    result = takedowns.add(code, reason, purge=cache.invalidate)
+    interstitials.pop(code, None)
+    return result
+
+
+@app.get("/admin/abuse")
+def abuse_stats():
+    return {"takedowns": takedowns.stats(),
+            "interstitial_codes": len(interstitials),
+            "policy": {"blocklisted_domains": len(policy.blocklist),
+                       "shortener_domains": len(policy.shorteners),
+                       "allow_private_targets": policy.allow_private}}
 
 
 @app.on_event("shutdown")

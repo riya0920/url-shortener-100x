@@ -1,0 +1,156 @@
+{
+  "hardware": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "cpu_count": 8,
+    "python": "3.14.3"
+  },
+  "isolation": "fresh server process and fresh database per measurement",
+  "budget_p99_ms": 50.0,
+  "duration_per_point_s": 10.0,
+  "repeats_per_point": 3,
+  "points": [
+    {
+      "requests": 3945,
+      "offered_rate": 400.0,
+      "achieved_rate": 394.5,
+      "p50_ms": 2.3062926316477217,
+      "p95_ms": 6.607545826979684,
+      "p99_ms": 9.06504534439655,
+      "p999_ms": 14.885423172390105,
+      "max_ms": 254.67784020327855,
+      "p99_service_ms": 9.063779967837034,
+      "p99_client_drift_ms": 0.9843648257865564,
+      "client_drift_share_of_p99": 0.10858906805083218,
+      "valid": true,
+      "status_counts": {
+        "307": 3945
+      },
+      "errors": 0,
+      "warmup_requests": 764,
+      "max_connections": 128,
+      "repeats": 3,
+      "p99_ms_runs": [
+        9.058820166234579,
+        9.06504534439655,
+        11.097621088766408
+      ],
+      "p99_ms_median": 9.06504534439655,
+      "p99_ms_spread": 2.038800922531829
+    },
+    {
+      "requests": 8182,
+      "offered_rate": 800.0,
+      "achieved_rate": 818.2,
+      "p50_ms": 4.852399467377033,
+      "p95_ms": 14.155940204454831,
+      "p99_ms": 25.88831021604366,
+      "p999_ms": 229.85746329508896,
+      "max_ms": 281.87338501764003,
+      "p99_service_ms": 25.887851957231412,
+      "p99_client_drift_ms": 0.9524139550684562,
+      "client_drift_share_of_p99": 0.036789344191272104,
+      "valid": true,
+      "status_counts": {
+        "307": 8182
+      },
+      "errors": 0,
+      "warmup_requests": 1647,
+      "max_connections": 128,
+      "repeats": 3,
+      "p99_ms_runs": [
+        17.89678065568964,
+        25.88831021604366,
+        26.009221852389764
+      ],
+      "p99_ms_median": 25.88831021604366,
+      "p99_ms_spread": 8.112441196700125
+    },
+    {
+      "requests": 12102,
+      "offered_rate": 1200.0,
+      "achieved_rate": 1210.2,
+      "p50_ms": 11.369497763928482,
+      "p95_ms": 27.835093599328776,
+      "p99_ms": 37.24409856003059,
+      "p999_ms": 48.823801678761285,
+      "max_ms": 297.0363516793979,
+      "p99_service_ms": 37.241647990886115,
+      "p99_client_drift_ms": 2.444466718648188,
+      "client_drift_share_of_p99": 0.06563366581978512,
+      "valid": true,
+      "status_counts": {
+        "307": 12102
+      },
+      "errors": 0,
+      "warmup_requests": 2366,
+      "max_connections": 128,
+      "repeats": 3,
+      "p99_ms_runs": [
+        33.15587859619688,
+        37.24409856003059,
+        43.829902006938205
+      ],
+      "p99_ms_median": 37.24409856003059,
+      "p99_ms_spread": 10.674023410741327
+    },
+    {
+      "requests": 16103,
+      "offered_rate": 1600.0,
+      "achieved_rate": 1610.3,
+      "p50_ms": 31.32303060674957,
+      "p95_ms": 65.0814126314568,
+      "p99_ms": 80.99546910798652,
+      "p999_ms": 97.81474492469512,
+      "max_ms": 101.47883987970107,
+      "p99_service_ms": 77.60452599963172,
+      "p99_client_drift_ms": 11.029857587101954,
+      "client_drift_share_of_p99": 0.13617869874173444,
+      "valid": true,
+      "status_counts": {
+        "307": 16103
+      },
+      "errors": 0,
+      "warmup_requests": 3261,
+      "max_connections": 128,
+      "repeats": 3,
+      "p99_ms_runs": [
+        58.97040772573587,
+        80.99546910798652,
+        93.73445211685993
+      ],
+      "p99_ms_median": 80.99546910798652,
+      "p99_ms_spread": 34.76404439112406
+    },
+    {
+      "requests": 20117,
+      "offered_rate": 2000.0,
+      "achieved_rate": 2011.7,
+      "p50_ms": 772.8908938180607,
+      "p95_ms": 1050.3202422324105,
+      "p99_ms": 1077.469363799045,
+      "p999_ms": 1083.9518475294856,
+      "max_ms": 1088.339593839148,
+      "p99_service_ms": 1073.7179119652137,
+      "p99_client_drift_ms": 30.48815321263028,
+      "client_drift_share_of_p99": 0.028296074335823547,
+      "valid": true,
+      "status_counts": {
+        "307": 20117
+      },
+      "errors": 0,
+      "warmup_requests": 4094,
+      "max_connections": 128,
+      "repeats": 3,
+      "p99_ms_runs": [
+        968.8521223301967,
+        1077.469363799045,
+        1695.9333552095268
+      ],
+      "p99_ms_median": 1077.469363799045,
+      "p99_ms_spread": 727.0812328793301
+    }
+  ],
+  "max_sustainable_rps_within_budget": 1210.2,
+  "at_offered_rate": 1200.0,
+  "caveat": "the generator shares the machine with the service. The `valid` flag rejects points where the generator's own scheduling backlog dominated; CPU contention between the two cannot be rejected the same way, so treat the absolute ceiling as a shape rather than a capacity number."
+}

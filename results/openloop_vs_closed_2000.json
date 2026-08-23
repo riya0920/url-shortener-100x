@@ -1,0 +1,148 @@
+{
+  "offered_rate": 2000.0,
+  "closed_loop_concurrency": 64,
+  "repeats": 5,
+  "pairs": [
+    {
+      "run": 0,
+      "host_load": {
+        "before": {
+          "cpu_percent": 31.5,
+          "cores": 8
+        },
+        "after": {
+          "cpu_percent": 25.2,
+          "cores": 8
+        }
+      },
+      "open_loop": {
+        "achieved_rate": 2029.7,
+        "p50_ms": 471.7218871668356,
+        "p99_ms": 677.1232417784033,
+        "p99_service_ms": 676.6942720115185,
+        "valid": true
+      },
+      "closed_loop": {
+        "concurrency": 64,
+        "rps": 2129.6,
+        "p50_ms": 29.502150078769773,
+        "p99_ms": 43.337780050933326
+      },
+      "p99_ratio_open_over_closed": 15.624317650387372
+    },
+    {
+      "run": 1,
+      "host_load": {
+        "before": {
+          "cpu_percent": 31.3,
+          "cores": 8
+        },
+        "after": {
+          "cpu_percent": 15.4,
+          "cores": 8
+        }
+      },
+      "open_loop": {
+        "achieved_rate": 2011.7,
+        "p50_ms": 1326.4867633098875,
+        "p99_ms": 1532.6712633039501,
+        "p99_service_ms": 1529.1670679766685,
+        "valid": true
+      },
+      "closed_loop": {
+        "concurrency": 64,
+        "rps": 2748.3,
+        "p50_ms": 22.815800039097667,
+        "p99_ms": 34.26748202182353
+      },
+      "p99_ratio_open_over_closed": 44.72669635685095
+    },
+    {
+      "run": 2,
+      "host_load": {
+        "before": {
+          "cpu_percent": 20.0,
+          "cores": 8
+        },
+        "after": {
+          "cpu_percent": 17.8,
+          "cores": 8
+        }
+      },
+      "open_loop": {
+        "achieved_rate": 2011.7,
+        "p50_ms": 51.85585905200085,
+        "p99_ms": 110.05962886294022,
+        "p99_service_ms": 108.74898000620306,
+        "valid": true
+      },
+      "closed_loop": {
+        "concurrency": 64,
+        "rps": 2522.1,
+        "p50_ms": 24.549200083129108,
+        "p99_ms": 37.61540004052222
+      },
+      "p99_ratio_open_over_closed": 2.9259194038711662
+    },
+    {
+      "run": 3,
+      "host_load": {
+        "before": {
+          "cpu_percent": 22.9,
+          "cores": 8
+        },
+        "after": {
+          "cpu_percent": 20.3,
+          "cores": 8
+        }
+      },
+      "open_loop": {
+        "achieved_rate": 1990.6,
+        "p50_ms": 829.497699157916,
+        "p99_ms": 1122.720378829547,
+        "p99_service_ms": 1119.087130035041,
+        "valid": true
+      },
+      "closed_loop": {
+        "concurrency": 64,
+        "rps": 2087.0,
+        "p50_ms": 30.052549962420017,
+        "p99_ms": 42.87218598532492
+      },
+      "p99_ratio_open_over_closed": 26.187616820235206
+    },
+    {
+      "run": 4,
+      "host_load": {
+        "before": {
+          "cpu_percent": 37.9,
+          "cores": 8
+        },
+        "after": {
+          "cpu_percent": 21.3,
+          "cores": 8
+        }
+      },
+      "open_loop": {
+        "achieved_rate": 2006.6,
+        "p50_ms": 803.0857112733538,
+        "p99_ms": 1037.7205815103205,
+        "p99_service_ms": 1036.081230000127,
+        "valid": true
+      },
+      "closed_loop": {
+        "concurrency": 64,
+        "rps": 2053.6,
+        "p50_ms": 30.705950048286468,
+        "p99_ms": 43.20595000172036
+      },
+      "p99_ratio_open_over_closed": 24.018001721267577
+    }
+  ],
+  "p99_ratio_median": 24.018001721267577,
+  "p99_ratio_range": [
+    2.9259194038711662,
+    44.72669635685095
+  ],
+  "reading": "the open-loop p99 includes queueing the closed loop cannot generate, because a closed-loop worker cannot issue its next request while the previous one is outstanding. The ratio is how much a closed-loop number flatters the service."
+}
