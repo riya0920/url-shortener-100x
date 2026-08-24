@@ -25,7 +25,7 @@ design review that argues its own decisions — including the ones it rejected.
 
 ```bash
 pip install -r requirements.txt
-make test        # 87 tests with a Redis server, 78 without (the rest skip)
+make test        # 112 tests with Redis + Postgres, 78 without (the rest skip)
 make sweep       # open-loop capacity sweep, fresh server per point
 make compare     # open loop vs closed loop, paired
 make run         # single instance on :8000
@@ -238,7 +238,8 @@ keys and turn a stampede on one link into a latency problem for every link.
 | Real Redis 8.0.5: Lua atomicity across processes, and a faster result than the fake | done |
 | **Multi-instance load test (correctness tested, load not)** | not possible here: needs a second machine |
 | Circuit breaker, measured at 51x throughput while the store is down | done |
-| **Postgres backend (SQLite stands in today)** | not possible here: no Postgres server |
+| Postgres link store, 25-test conformance suite over both backends | done |
+| Server-side expiry sweep with a partial index (SQLite cannot) | done |
 | Abuse controls: reputation, SSRF refusal, interstitial, takedown | done |
 | Cross-instance invalidation: durable replayable log, measured propagation | done |
 | Redis pub/sub push, **executed** against a real server | done |
@@ -377,6 +378,52 @@ And one test demonstrates *why* pub/sub alone is the wrong shape rather than
 asserting it: a subscriber that was not listening when the message went out
 receives nothing, forever, with no error anywhere — while the log replay catches
 it up immediately.
+
+## The Postgres link store
+
+`LINK_BACKEND=postgres SHORTENER_PG_DSN=postgresql://...` swaps the store.
+`tests/test_pgstore.py` runs **one conformance suite over both backends**, so
+"interface-compatible" is checked rather than claimed — 25 tests, all passing on
+both.
+
+### Postgres is 3x slower here, and that is not the argument against it
+
+| backend | rps | p50 | p99 |
+|---|---|---|---|
+| SQLite | **1,900** | **32.1 ms** | **64.5 ms** |
+| Postgres 18.6 | 632 | 87.3 ms | 313.4 ms |
+
+Every cache miss now crosses a TCP boundary that a local file does not have, and
+on one machine that is a straight loss. Anyone choosing Postgres for
+single-node read throughput is choosing wrong.
+
+The reason to run it is that **SQLite cannot be shared**. Two instances against
+one SQLite file over a network filesystem is a corruption story, not a scaling
+one — so the SQLite number is not "the same service, faster", it is a different
+deployment that happens to be one process. The moment there is a second instance,
+the comparison stops being 1,900-vs-632 and starts being 632-vs-doesn't-work.
+
+### Three things that are genuinely different, not just dialect
+
+* **Creation is one statement.** SQLite catches `IntegrityError` to detect a code
+  collision; Postgres uses `ON CONFLICT DO NOTHING RETURNING code`. Same outcome
+  without using an exception for control flow across a network.
+* **Expiry is a real `TIMESTAMPTZ`** with a **partial** index (`WHERE expires_at
+  IS NOT NULL` — permanent links are the overwhelming majority and a full index
+  would carry every one of them forever). That enables `purge_expired()`, which
+  SQLite cannot do usefully: with expiry as an integer and no scheduler, an
+  expired link nobody requests sits on disk forever. It returns a count, so an
+  operator can tell "nothing to delete" from "the job never ran".
+* **Hit counting adds inside the database.** Eight threads flushing counters
+  concurrently lose nothing; a read-then-write in the client drops a batch
+  whenever two flushes land together, and Postgres is the backend that actually
+  has other writers to race.
+
+One bug worth recording: passing `NULL` into `CASE WHEN %s IS NULL THEN NULL ELSE
+to_timestamp(%s/1000.0) END` fails with `could not determine data type of
+parameter $4` — an untyped NULL inside a CASE has no inferable type. Converting in
+Python and passing a real `datetime | None` lets the driver carry the type with
+the value, which is what it is for.
 
 ## Abuse controls
 

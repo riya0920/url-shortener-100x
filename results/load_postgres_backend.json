@@ -1,0 +1,72 @@
+{
+  "hardware": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 126 Stepping 5, GenuineIntel",
+    "cpu_count": 8,
+    "python": "3.14.3"
+  },
+  "config": {
+    "duration_s": 15.0,
+    "concurrency": 64,
+    "links": 500,
+    "create_rps": 0.0,
+    "warmup_s": 3.0,
+    "zipf_a": 1.2
+  },
+  "resolve": {
+    "requests": 9473,
+    "rps": 631.5333333333333,
+    "p50_ms": 87.26369997020811,
+    "p95_ms": 166.26418002415448,
+    "p99_ms": 313.4145919885573,
+    "max_ms": 4368.738600052893,
+    "status_counts": {
+      "307": 9473
+    },
+    "errors": 0,
+    "non_2xx_3xx": 0
+  },
+  "create": {
+    "requests": 0,
+    "rps": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "p99_ms": 0.0,
+    "max_ms": 0.0,
+    "status_counts": {},
+    "errors": 0,
+    "non_2xx_3xx": 0
+  },
+  "server_metrics": {
+    "instance": 1,
+    "limiter_enabled": false,
+    "limiter_backend": "sqlite",
+    "cache": {
+      "hits": 9050,
+      "misses": 990,
+      "hit_ratio": 0.901394422310757,
+      "size": 458,
+      "capacity": 50000
+    },
+    "singleflight_collapsed": 74,
+    "hit_counter": {
+      "recorded": 9582,
+      "flushes": 9,
+      "pending_keys": 150,
+      "flush_interval_s": 2.0
+    },
+    "limiter": {
+      "fail_open_count": 0,
+      "errors": 0,
+      "breaker": {
+        "state": "closed",
+        "consecutive_failures": 0,
+        "trips": 0,
+        "short_circuited": 0,
+        "probes": 0
+      }
+    },
+    "links": 501
+  },
+  "caveat": "closed-loop generator: each worker waits for its response before issuing the next request, which UNDERSTATES tail latency under saturation (coordinated omission)"
+}

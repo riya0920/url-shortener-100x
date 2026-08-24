@@ -35,7 +35,17 @@ LIMITER_BACKEND = os.environ.get("LIMITER_BACKEND", "sqlite")
 
 os.makedirs(DATA, exist_ok=True)
 
-links = LinkStore(os.path.join(DATA, "links.db"))
+# The link store backend. SQLite is the default because it needs nothing;
+# Postgres is what a deployment with more than one instance actually wants,
+# since SQLite over a shared filesystem is a corruption story rather than a
+# scaling one.
+LINK_BACKEND = os.environ.get("LINK_BACKEND", "sqlite")
+if LINK_BACKEND == "postgres":
+    from .pgstore import PgLinkStore
+
+    links = PgLinkStore(os.environ["SHORTENER_PG_DSN"])
+else:
+    links = LinkStore(os.path.join(DATA, "links.db"))
 def _build_limiter_store():
     if LIMITER_BACKEND == "redis":
         import redis as _redis
@@ -138,7 +148,7 @@ def enforce_limit(request: Request):
 
 @app.get("/healthz")
 def healthz():
-    return {"status": "ok", "instance": INSTANCE_ID}
+    return {"status": "ok", "instance": INSTANCE_ID, "link_backend": LINK_BACKEND}
 
 
 @app.post("/admin/reset-metrics")
