@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field, field_validator
 
 from .breaker import BreakerGuardedLimiter
+from .invalidation import InvalidationPoller, SqliteInvalidationBus
 from .counters import HitCounter
 from .ids import SnowflakeGenerator
 from .limiter import FailOpenLimiter, RateLimiter, RedisStore, SqliteStore
@@ -64,7 +65,14 @@ limiter = BreakerGuardedLimiter(
 # shorten http://localhost URLs; in production it must stay off, or the service
 # is an SSRF pivot for anything that follows redirects server-side.
 policy = ReputationPolicy(allow_private=os.environ.get("ALLOW_PRIVATE_TARGETS", "0") == "1")
-takedowns = TakedownList()
+
+# The invalidation log lives in the shared data directory, which is what makes it
+# shared: every instance in a deployment points SHORTENER_DATA at the same place,
+# exactly as they already do for the link store.
+invalidation_bus = SqliteInvalidationBus(
+    os.path.join(DATA, "invalidations.db"),
+    poll_interval_s=float(os.environ.get("INVALIDATION_POLL_S", "1.0")))
+takedowns = TakedownList(bus=invalidation_bus)
 # Codes that resolve through an interstitial instead of a 307. In-process on
 # purpose and wrong on purpose: like the LRU it does not survive a restart and
 # does not cross instances, and it is listed with the cache-invalidation gap
@@ -73,6 +81,11 @@ interstitials = {}
 
 ids = SnowflakeGenerator(INSTANCE_ID)
 cache = LruCache(capacity=50_000)
+# Started after the cache exists, and registered from sequence zero: a fresh
+# instance has an empty cache, so replaying the whole log is cheap and makes it
+# correct by construction rather than by luck.
+invalidation_poller = InvalidationPoller(
+    invalidation_bus, "instance-%s" % INSTANCE_ID, cache).start()
 flight = SingleFlight()
 hits = HitCounter(links, flush_interval=2.0)
 
@@ -247,16 +260,25 @@ def takedown(code: str, reason: str = "policy violation"):
     """
     result = takedowns.add(code, reason, purge=cache.invalidate)
     interstitials.pop(code, None)
+    # Drain our own cursor immediately so this instance's poller does not
+    # re-apply what it just published, and so `invalidation_lag` reads zero here.
+    invalidation_poller.drain_now()
     return result
 
 
 @app.get("/admin/abuse")
 def abuse_stats():
     return {"takedowns": takedowns.stats(),
+            "invalidation_lag": invalidation_bus.lag("instance-%s" % INSTANCE_ID),
             "interstitial_codes": len(interstitials),
             "policy": {"blocklisted_domains": len(policy.blocklist),
                        "shortener_domains": len(policy.shorteners),
                        "allow_private_targets": policy.allow_private}}
+
+
+@app.on_event("shutdown")
+def _stop_poller():
+    invalidation_poller.stop()
 
 
 @app.on_event("shutdown")

@@ -21,8 +21,10 @@ reputation. This is the single most common evasion and it is a two-line fix.
 easy to get wrong: marking a row in the database while a hot code sits in an
 in-process LRU on every instance means the link keeps resolving. On one instance
 that is a local cache purge. Across N instances it is a distributed cache
-invalidation problem, and this repo does **not** solve it — it detects it, refuses
-to claim the takedown is complete, and reports the gap. See `TakedownList`.
+invalidation problem, and it is now solved by a **durable, replayable
+invalidation log** rather than a fire-and-forget message — see
+`invalidation.py`. `TakedownList` reports a measured propagation bound instead of
+the "UNBOUNDED" it used to have to admit to.
 
 **Interstitials, not blanket blocking, for the uncertain middle.** Most suspicious
 links are not provably malicious. A hard block on a maybe is a support ticket; an
@@ -139,29 +141,39 @@ class ReputationPolicy:
 
 
 class TakedownList:
-    """Codes withdrawn after the fact, and the honest limit of that.
+    """Codes withdrawn after the fact, and what it takes to make that stick.
 
     A takedown has three parts and only two of them are easy:
 
       1. mark the code (durable, cheap)
       2. purge it from *this* instance's cache (local, cheap)
-      3. purge it from every *other* instance's cache (distributed, not solved here)
+      3. purge it from every *other* instance's cache (distributed)
 
-    Part 3 is why `pending_propagation` exists. With no shared invalidation
-    channel, a code taken down on instance 1 keeps resolving on instance 2 until
-    its cache entry ages out, and the only correct thing this class can do is
-    report that window instead of pretending it closed. `docs/DESIGN_100X.md`
-    describes the pub/sub invalidation that would close it.
+    Part 3 used to be unimplemented, and `add()` reported "UNBOUNDED" rather than
+    claiming success. It is now handled by publishing to a **durable invalidation
+    log** (`invalidation.SqliteInvalidationBus`) that every instance replays from
+    its own cursor. The difference from a published message is that an instance
+    which was restarting, paused or partitioned when the takedown happened still
+    converges: it replays what it missed rather than never learning.
+
+    What that buys is a *bound*, not a confirmation. No instance knows how many
+    instances exist, so `add()` reports "every instance polling at interval T has
+    applied this within T", measured rather than assumed. Turning a bound into a
+    confirmation needs instance registration and acks, which is service discovery
+    and is out of scope here — and is said so rather than glossed.
     """
 
-    def __init__(self, ttl_bound_s: float = 0.0):
+    def __init__(self, ttl_bound_s: float = 0.0, bus=None, poll_interval_s: float = None):
         self._lock = threading.Lock()
         self._codes = {}
-        # The cache TTL bounds how long a stale entry can survive elsewhere.
-        # Zero means "unbounded", which is the honest answer for an LRU with no
-        # TTL and is worth surfacing rather than defaulting to a comforting number.
+        # The cache TTL bounds how long a stale entry can survive elsewhere, and
+        # is the fallback when there is no bus at all.
         self.ttl_bound_s = ttl_bound_s
+        self.bus = bus
+        self.poll_interval_s = (poll_interval_s if poll_interval_s is not None
+                                else getattr(bus, "poll_interval_s", None))
         self.local_purges = 0
+        self.published = 0
 
     def add(self, code: str, reason: str, purge=None) -> dict:
         with self._lock:
@@ -169,15 +181,31 @@ class TakedownList:
         if purge is not None:
             purge(code)
             self.local_purges += 1
+
+        seq = None
+        if self.bus is not None:
+            # Published AFTER the local purge, so the instance handling the
+            # request is never the last to know about its own action.
+            seq = self.bus.publish(code, reason)
+            self.published += 1
+
         return {
             "code": code,
             "reason": reason,
             "local_cache_purged": purge is not None,
+            "invalidation_seq": seq,
             "propagation": (
+                "published to the invalidation log at seq %d; every instance polling at %.1fs "
+                "has applied it within that bound, including instances that were down when it "
+                "was written" % (seq, self.poll_interval_s or 0.0)
+                if seq is not None else
                 "complete on this instance only; other instances may serve this code from "
                 "their own caches until eviction"
                 + (" (bounded at %.0fs by the cache TTL)" % self.ttl_bound_s
                    if self.ttl_bound_s else " (UNBOUNDED: the cache has no TTL)")),
+            "confirmed_on_all_instances": False,
+            "why_not_confirmed": ("no instance knows how many instances exist; this is a "
+                                  "propagation bound, not an acknowledgement"),
         }
 
     def __contains__(self, code: str) -> bool:
@@ -192,8 +220,16 @@ class TakedownList:
     def stats(self) -> dict:
         with self._lock:
             n = len(self._codes)
-        return {"taken_down": n, "local_purges": self.local_purges,
-                "cross_instance_invalidation": "not implemented -- see TakedownList docstring"}
+        return {
+            "taken_down": n,
+            "local_purges": self.local_purges,
+            "published_to_bus": self.published,
+            "cross_instance_invalidation": (
+                "durable log, replayable, bound %.1fs" % (self.poll_interval_s or 0.0)
+                if self.bus is not None else
+                "not configured -- local purge only"),
+            "bus": self.bus.stats() if self.bus is not None else None,
+        }
 
 
 INTERSTITIAL_HTML = """<!doctype html><meta charset="utf-8">

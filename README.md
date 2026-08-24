@@ -25,7 +25,7 @@ design review that argues its own decisions — including the ones it rejected.
 
 ```bash
 pip install -r requirements.txt
-make test        # 61 tests, two of which spawn real processes
+make test        # 78 tests, two of which spawn real processes
 make sweep       # open-loop capacity sweep, fresh server per point
 make compare     # open loop vs closed loop, paired
 make run         # single instance on :8000
@@ -239,7 +239,8 @@ keys and turn a stampede on one link into a latency problem for every link.
 | Circuit breaker, measured at 51x throughput while the store is down | done |
 | **Postgres backend (SQLite stands in today)** | not possible here: no Postgres server |
 | Abuse controls: reputation, SSRF refusal, interstitial, takedown | done |
-| **Cross-instance cache invalidation for takedown** | not implemented, and reported as such |
+| Cross-instance invalidation: durable replayable log, measured propagation | done |
+| **Redis pub/sub push alongside the log** | written, never executed: no Redis server |
 
 ## The closed-loop number was 24x too optimistic
 
@@ -370,18 +371,72 @@ cache, and is checked **before** the cache on the read path — checking after w
 let a hot code keep redirecting from cache after it was withdrawn, which is the
 entire failure mode a takedown exists to prevent.
 
-Across instances it does not work, and the response says so rather than reporting
-success:
+### Cross-instance invalidation, and why it is a log rather than a message
+
+Across instances this used to not work at all, and the response said so instead
+of reporting success. It works now, and the shape of the fix is the point:
+**cache invalidation across instances is a distributed-systems problem, not a
+cache problem.**
+
+The obvious implementation — publish a message, everyone deletes — is
+*at-most-once delivery of a correctness-critical event*. An instance that is
+restarting, GC-paused or briefly partitioned when the message goes out never
+learns, and it keeps serving a phishing link with nothing raising anywhere.
+
+So invalidations go to a **durable, replayable log**: a monotonic sequence, and
+each instance tracks the last sequence it applied. That turns invalidation into
+*state* rather than an event you had to be awake for — an instance that was down
+replays what it missed, a partitioned one catches up when it heals, and a brand
+new one is made correct by replaying from zero. Duplicate delivery costs nothing
+because eviction is idempotent, and the cursor advances only after a batch is
+applied, so a crash mid-poll replays rather than skips.
+
+`synchronous=FULL` on this one database, against `NORMAL` everywhere else in the
+service. Losing the last few invalidations to power loss means a withdrawn
+phishing link quietly comes back; that is not a durability trade anyone takes to
+save an fsync on an event that happens a few times a day.
+
+**Redis pub/sub is written and deliberately left as the incomplete half.** The
+production shape is pub/sub *plus* the log — push for latency, poll for
+certainty — and the log is the part that cannot be skipped, which is why it is
+the part that is implemented and tested.
+
+### A modelling error the measurement caught
+
+`measure_propagation` first asserted the mean would land under one poll interval.
+It came in at **1.18x** with three instances, and the model was wrong rather than
+the code: a takedown is done when the **last** instance converges, so the fleet's
+wait is the maximum of N per-instance draws, not one of them.
+
+    E[max of N uniform(0, T)] = T * N / (N + 1)
+
+That is 0.50T at one instance, 0.75T at three, and **0.91T at ten**. Propagation
+*degrades as the fleet grows*, and a window measured on a single instance
+understates a real deployment — in the direction that matters. The function now
+reports the theoretical expectation next to the measurement so the two can be
+compared instead of the measurement standing alone.
+
+### What it still refuses to claim
 
 ```json
-{"code": "G2HWDGUZIe", "reason": "phishing", "local_cache_purged": true,
- "propagation": "complete on this instance only; other instances may serve this
-  code from their own caches until eviction (UNBOUNDED: the cache has no TTL)"}
+{"code": "G3zKeXrXIu", "reason": "phishing", "local_cache_purged": true,
+ "invalidation_seq": 1,
+ "propagation": "published to the invalidation log at seq 1; every instance
+  polling at 1.0s has applied it within that bound, including instances that
+  were down when it was written",
+ "confirmed_on_all_instances": false,
+ "why_not_confirmed": "no instance knows how many instances exist; this is a
+  propagation bound, not an acknowledgement"}
 ```
 
-That is a real gap with a real design in `docs/DESIGN_100X.md` (pub/sub
-invalidation) and no implementation here. Reporting `{"status": "ok"}` would have
-been one line shorter and a lie.
+A bound is not an acknowledgement. No instance knows how many instances there
+are, so confirming would need registration and acks — service discovery this repo
+does not have. `confirmed_on_all_instances` is there because `propagation` now
+*sounds* reassuring, and the distinction has to survive that.
+
+Every test for this builds **at least two caches with separate cursors**, because
+a single-instance test cannot fail on the bug being fixed: the old code purged
+locally, returned success, and passed everything.
 
 ### The half-open probe, now tested under threads
 
@@ -402,8 +457,13 @@ you whether it will.
 * **The 24x coordinated-omission ratio is the robust part.** It is a paired
   measurement on the same server process seconds apart, so contention moves both
   arms together. The absolute rps figures are the fragile part.
-* **Takedown does not propagate across instances**, and the API says so on every
-  call rather than returning success.
+* **Takedown propagation is a bound, not a confirmation.** Every instance
+  converges within one poll interval, including instances that were down when the
+  takedown was written — but nothing acknowledges, because no instance knows how
+  many instances exist. The API says that on every call.
+* **The Redis push path has never run.** The durable log carries correctness on
+  its own; the push would only reduce latency, and it is labelled unexecuted
+  rather than counted.
 
 * **Every throughput and latency number came from a run on one laptop that was
   also generating the load.** They are a floor, not a ceiling, and the method

@@ -138,10 +138,27 @@ def test_takedown_reports_a_bounded_window_when_the_cache_has_a_ttl():
     assert "bounded at 60s" in r["propagation"]
 
 
-def test_takedown_stats_name_the_missing_piece():
+def test_takedown_stats_name_the_missing_piece_when_there_is_no_bus():
+    """Without a bus this really is local-purge-only, and the stats have to keep
+    saying so. The failure mode after adding the invalidation log is the opposite
+    of the original one: a reassuring string reported by a deployment that never
+    configured the bus."""
     t = TakedownList()
     t.add("a", "x")
-    assert "not implemented" in t.stats()["cross_instance_invalidation"]
+    assert "local purge only" in t.stats()["cross_instance_invalidation"]
+    assert t.stats()["bus"] is None
+
+
+def test_takedown_stats_report_the_bound_when_a_bus_is_configured(tmp_path):
+    from shortener.invalidation import SqliteInvalidationBus
+
+    bus = SqliteInvalidationBus(str(tmp_path / "b.db"), poll_interval_s=2.0)
+    t = TakedownList(bus=bus)
+    t.add("a", "x")
+    st = t.stats()
+    assert "durable log" in st["cross_instance_invalidation"]
+    assert st["published_to_bus"] == 1
+    assert st["bus"]["head"] == 1
 
 
 # --- the breaker's half-open probe, under threads --------------------------
