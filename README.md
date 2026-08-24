@@ -25,7 +25,7 @@ design review that argues its own decisions — including the ones it rejected.
 
 ```bash
 pip install -r requirements.txt
-make test        # 78 tests, two of which spawn real processes
+make test        # 87 tests with a Redis server, 78 without (the rest skip)
 make sweep       # open-loop capacity sweep, fresh server per point
 make compare     # open loop vs closed loop, paired
 make run         # single instance on :8000
@@ -58,7 +58,8 @@ With the read path fixed, the limiter became the bottleneck:
 |---|---|---|---|
 | limiter off | 1900 | 32.2 ms | 64.5 ms |
 | limiter on, SQLite | 311 | 85.8 ms | **4310 ms** |
-| limiter on, Redis-Lua (*) | 429 | 142.3 ms | **299 ms** |
+| limiter on, Redis-Lua (fakeredis) | 429 | 142.3 ms | 299 ms |
+| limiter on, **real Redis 8.0.5** | **563** | 105.6 ms | **228 ms** |
 
 The SQLite p99 is the interesting number: `BEGIN IMMEDIATE` takes a
 database-wide write lock, so requests queue behind each other and the tail
@@ -234,13 +235,13 @@ keys and turn a stampede on one link into a latency problem for every link.
 | Half-open probe under 64 racing threads: exactly 1 admitted | done |
 | Open-loop generator, Poisson arrivals, latency from scheduled time | done |
 | Paired open-vs-closed comparison: closed loop is 24x optimistic | done |
-| **Real Redis server rather than fakeredis** | not possible here: no Redis server |
+| Real Redis 8.0.5: Lua atomicity across processes, and a faster result than the fake | done |
 | **Multi-instance load test (correctness tested, load not)** | not possible here: needs a second machine |
 | Circuit breaker, measured at 51x throughput while the store is down | done |
 | **Postgres backend (SQLite stands in today)** | not possible here: no Postgres server |
 | Abuse controls: reputation, SSRF refusal, interstitial, takedown | done |
 | Cross-instance invalidation: durable replayable log, measured propagation | done |
-| **Redis pub/sub push alongside the log** | written, never executed: no Redis server |
+| Redis pub/sub push, **executed** against a real server | done |
 
 ## The closed-loop number was 24x too optimistic
 
@@ -336,6 +337,46 @@ the data rather than reconstructed afterwards.
 make sweep      # fresh server + fresh DB per point, 3 repeats
 make compare    # open vs closed loop, paired, 5 runs
 ```
+
+### Real Redis turned out to be *faster* than the fake
+
+Every Redis number in this repo used to come from **fakeredis**, marked with an
+asterisk because an in-process reimplementation is not a server. The obvious
+expectation was that the asterisked number flattered the Redis path — no network
+hop, no serialisation, no separate process.
+
+It was the opposite. Real Redis 8.0.5 over a loopback into WSL2: **563 rps
+against fakeredis's 429**, p99 **228 ms against 299 ms**.
+
+The reason is that fakeredis is *Python*. It runs the same Lua, in-process, under
+the same GIL as the web server's own worker threads — so every limiter check
+contends with the request handling it is supposed to be measuring. A real Redis is
+a C process on its own cores, and the TCP round trip costs less than the GIL
+contention it removes.
+
+So the asterisk was pessimistic, not optimistic, and the honest reading of the old
+table is that the Redis-Lua row understated its own case by 30%. The new number is
+still a lower bound: this Redis is inside a VM, so it pays a boundary crossing a
+co-located server would not.
+
+### What a real server tests that a fake cannot
+
+`SHORTENER_REDIS_URL=redis://... pytest tests/test_real_redis.py` — 9 tests, and
+two of them could not have existed before:
+
+**Lua atomicity across real processes.** Eight threads, each on its *own*
+connection, racing for a 50-token bucket. Exactly 50 admitted. fakeredis has no
+other process to race with, so it can only ever confirm that the script is
+single-threaded-correct — which is not the property the script exists for.
+
+**The pub/sub bus, previously never executed.** `RedisPubSubBus` was written,
+labelled unrun, and is now exercised: the push arrives, the durable log records it
+regardless, and a broken Redis costs latency rather than correctness.
+
+And one test demonstrates *why* pub/sub alone is the wrong shape rather than
+asserting it: a subscriber that was not listening when the message went out
+receives nothing, forever, with no error anywhere — while the log replay catches
+it up immediately.
 
 ## Abuse controls
 
@@ -461,9 +502,9 @@ you whether it will.
   converges within one poll interval, including instances that were down when the
   takedown was written — but nothing acknowledges, because no instance knows how
   many instances exist. The API says that on every call.
-* **The Redis push path has never run.** The durable log carries correctness on
-  its own; the push would only reduce latency, and it is labelled unexecuted
-  rather than counted.
+* **The Redis results come from a server inside WSL2**, so every command crosses
+  a VM boundary. That makes the real-Redis throughput figure a lower bound, not an
+  upper one — a co-located server would do better, not worse.
 
 * **Every throughput and latency number came from a run on one laptop that was
   also generating the load.** They are a floor, not a ceiling, and the method
