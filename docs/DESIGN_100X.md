@@ -17,7 +17,7 @@ as a measured production result, because there is no production.
 
 Read:write is **100:1** and that ratio drives every decision below. This is a
 read-mostly system with a small, append-only write path, which is a much easier
-problem than it first appears — and mistaking it for a write-heavy one is how
+problem than it first appears - and mistaking it for a write-heavy one is how
 these designs get over-built.
 
 ## 2. Capacity arithmetic
@@ -39,7 +39,7 @@ corpus at 100x. This is the number that decides Postgres vs Cassandra in §5, an
 it is the reason the answer is Postgres.
 
 Growth: 50 M links/day x 270 B = **13.5 GB/day, ~5 TB/year**. So single-node
-storage has roughly a 2–3 year runway at 100x before sharding is forced — not
+storage has roughly a 2-3 year runway at 100x before sharding is forced - not
 "never", but far enough out that building for it now is speculative.
 
 ### Cache
@@ -61,7 +61,7 @@ with room to spare. At a 95% hit ratio:
 
 5,000 point-lookup QPS on an indexed primary key is comfortable for one Postgres
 instance. **The cache hit ratio is therefore the single most important number in
-this system** — at 90% it doubles to 10,000 QPS, and at 80% it doubles again.
+this system** - at 90% it doubles to 10,000 QPS, and at 80% it doubles again.
 This is why hit ratio is a first-class metric in `/metrics` rather than an
 afterthought.
 
@@ -74,7 +74,7 @@ Mbps** egress. Not a constraint.
 
 One bucket per client: key (~40 B) + hash of two fields (~100 B) ≈ 140 B. One
 million active clients ≈ **140 MB**. Keys expire after refill-from-empty time, so
-this does not grow without bound — the `PEXPIRE` in the Lua script is what makes
+this does not grow without bound - the `PEXPIRE` in the Lua script is what makes
 that true, and omitting it is a slow memory leak that only shows up in month
 three.
 
@@ -84,12 +84,12 @@ three.
 
 | option | verdict |
 |---|---|
-| auto-increment integer | **rejected.** Coordination on the hot path; the sequence becomes the write bottleneck exactly when you scale out. Also enumerable — `/1`, `/2` walks the corpus. |
+| auto-increment integer | **rejected.** Coordination on the hot path; the sequence becomes the write bottleneck exactly when you scale out. Also enumerable - `/1`, `/2` walks the corpus. |
 | random base62 + uniqueness check | **rejected.** Requires a read + retry loop on every create. Works fine, but the check is unremovable and collision probability grows with the corpus. |
 | UUID4 | **rejected.** 22+ characters is a bad short link, and random ids destroy index insert locality. |
 | **snowflake (ts \| instance \| seq)** | **chosen.** No hot-path coordination, no uniqueness check, k-sorted for index locality. |
 
-**What it costs.** Instance ids must be unique — that is still coordination, just
+**What it costs.** Instance ids must be unique - that is still coordination, just
 moved to startup, and a duplicated instance id silently produces duplicate codes.
 Ids leak creation time and, given two links, a rough creation rate. Acceptable
 for public short links; **not** acceptable if codes were capability tokens, which
@@ -104,22 +104,22 @@ risking a duplicate. Loud beats silently wrong.
 | option | verdict |
 |---|---|
 | in-process, per instance | **rejected.** Budget multiplies by the instance count, and it resets on deploy. Fine only if the limit is advisory. |
-| at the load balancer / CDN edge | **strong option, deferred.** Cheapest possible enforcement — rejected requests never reach us. But per-API-key logic and custom quotas are awkward there. **At 100x this becomes the right first line of defence**, with the application limiter as the second. |
+| at the load balancer / CDN edge | **strong option, deferred.** Cheapest possible enforcement - rejected requests never reach us. But per-API-key logic and custom quotas are awkward there. **At 100x this becomes the right first line of defence**, with the application limiter as the second. |
 | **shared store (Redis) + Lua** | **chosen for now.** One authoritative budget across all instances, atomic, with per-key logic we control. |
-| sidecar with local buckets + async reconciliation | **rejected.** Lower latency, but eventually-consistent budgets mean bursts leak. Right answer at very high QPS if you can tolerate approximate limits — we cannot state a bound on the leak, so we did not take it. |
+| sidecar with local buckets + async reconciliation | **rejected.** Lower latency, but eventually-consistent budgets mean bursts leak. Right answer at very high QPS if you can tolerate approximate limits - we cannot state a bound on the leak, so we did not take it. |
 
 ### 3.3 Algorithm: token bucket vs the alternatives
 
 | option | verdict |
 |---|---|
 | fixed window counter | **rejected.** The boundary problem: a client can send 2x its budget across a window edge (full budget at 00:59, full budget again at 01:00). |
-| sliding window log | **rejected.** Exact, but stores a timestamp per request — memory grows with traffic, and a heavy client is the one that costs you most. |
+| sliding window log | **rejected.** Exact, but stores a timestamp per request - memory grows with traffic, and a heavy client is the one that costs you most. |
 | sliding window counter | reasonable approximation; more complex than token bucket for no benefit here. |
 | **token bucket** | **chosen.** O(1) memory per client, allows a controlled burst (capacity) while bounding the sustained rate (refill), and refills lazily so there is no timer and no drift. |
 
 **What traffic pattern breaks token bucket:** a client that idles long enough to
 fill its bucket and then dumps the entire capacity instantly. That burst is
-*allowed by design* — capacity is exactly how much burst we permit. If bursts are
+*allowed by design* - capacity is exactly how much burst we permit. If bursts are
 the thing being protected against rather than the sustained rate, capacity must
 shrink toward 1, and at that point a sliding window is the better tool.
 
@@ -139,21 +139,21 @@ section.
 
 ## 4. Failure modes
 
-### 4.1 Redis dies — what happens in the next 500 ms
+### 4.1 Redis dies - what happens in the next 500 ms
 
 **Exactly this, in order:**
 
-1. `t+0 ms` — the first `EVALSHA` fails with a connection error.
-2. `t+0 ms` — `FailOpenLimiter` catches it, increments `fail_open_count`, and
+1. `t+0 ms` - the first `EVALSHA` fails with a connection error.
+2. `t+0 ms` - `FailOpenLimiter` catches it, increments `fail_open_count`, and
    returns `allowed=True`. **The request proceeds.**
-3. `t+0..500 ms` — every subsequent request does the same. At 1,000 QPS that is
+3. `t+0..500 ms` - every subsequent request does the same. At 1,000 QPS that is
    ~500 requests admitted without limit enforcement.
 4. Meanwhile the resolve path is **unaffected**: the LRU cache is in-process and
    the database is a separate dependency. Resolves keep serving at full speed.
 5. `fail_open_count` climbing triggers an alert within one scrape interval.
 
 **We fail OPEN, and it is a product decision before it is a technical one.**
-Failing closed turns a Redis outage into a *total* outage — the limiter, a
+Failing closed turns a Redis outage into a *total* outage - the limiter, a
 protective control, becomes the single point of failure for the whole service.
 Failing open turns it into a window of unenforced limits during which the product
 still works.
@@ -169,20 +169,20 @@ constructor flag, not a hardcoded assumption.
 
 **Mitigation before it comes to that:** a local per-instance bucket as a
 fallback, sized to `global_budget / instance_count`. Approximate, but far better
-than unlimited. Not built — noted as the first thing to add.
+than unlimited. Not built - noted as the first thing to add.
 
 ### 4.2 A link goes viral: 100 K resolves/sec on one key
 
 Layer by layer:
 
-1. **Load balancer** — spreads across instances. No single-key affinity, so this
+1. **Load balancer** - spreads across instances. No single-key affinity, so this
    is just traffic.
-2. **In-process LRU** — after the first resolve on each instance, every
+2. **In-process LRU** - after the first resolve on each instance, every
    subsequent hit is served from memory. A hot key is the *best* case for a
    cache: it is always resident and never evicted. At N instances this costs N
    cache misses total, forever.
 3. **The dangerous moment is expiry.** When the TTL lapses, every concurrent
-   request for that key misses simultaneously — the classic stampede, where a
+   request for that key misses simultaneously - the classic stampede, where a
    miss that should cost one query costs 100,000.
 4. **SingleFlight** collapses those concurrent misses into exactly one backend
    call per instance; the rest wait on the leader's result. `collapsed` is a
@@ -191,8 +191,8 @@ Layer by layer:
 5. **Database** sees N queries (one per instance), not 100,000.
 
 **The subtle bug worth naming:** an obvious "fix" is a per-key lock around the
-load. That *serialises* the stampede without *collapsing* it — the backend still
-sees N calls, just one at a time — which is strictly worse than nothing, because
+load. That *serialises* the stampede without *collapsing* it - the backend still
+sees N calls, just one at a time - which is strictly worse than nothing, because
 it adds latency without removing load. The first version of `SingleFlight` here
 had exactly that bug and the test caught it.
 
@@ -204,7 +204,7 @@ worth strictly less than redirect availability.
 
 ### 4.3 Database failover
 
-Resolves survive on cache for the cache TTL. Creates fail — correctly, with 503;
+Resolves survive on cache for the cache TTL. Creates fail - correctly, with 503;
 a shortener that accepts a link it did not store is worse than one that says no.
 Recovery is bounded by the failover, and the cache is the buffer that makes it
 invisible to most users. **What makes this survivable is the read:write ratio:**
@@ -213,12 +213,12 @@ invisible to most users. **What makes this survivable is the read:write ratio:**
 ### 4.4 Cache node loss
 
 The LRU is in-process, so losing an instance loses only its cache. The replacement
-starts cold and its miss rate spikes until the working set refills — with a
+starts cold and its miss rate spikes until the working set refills - with a
 zipfian distribution that is fast, seconds not minutes. This is a strong argument
 for keeping the cache in-process rather than centralising it: there is no shared
 cache tier to lose.
 
-## 5. Postgres at 100x — convince me you don't need Cassandra
+## 5. Postgres at 100x - convince me you don't need Cassandra
 
 **The claim: Postgres, and this is not a close call at this scale.**
 
@@ -244,15 +244,15 @@ cache tier to lose.
   creates on three continents the calculus flips.
 * **Corpus growth past ~2 TB with no archival.** At 5 TB/year we hit this in year
   two or three, at which point the choice is sharding Postgres by code prefix
-  (straightforward — the key space is uniform and there are no cross-shard
+  (straightforward - the key space is uniform and there are no cross-shard
   queries) or moving to a system that shards for us.
 * **A write pattern we do not have today**, such as heavy per-link mutation or
   large analytics rows.
 
 **Honest read of the tradeoff:** the strongest argument *for* Cassandra is
 avoiding a migration later. The counter-argument is that sharding this particular
-schema is unusually easy — immutable rows, uniformly distributed keys, no joins,
-no transactions across links — so the migration we would be pre-paying for is one
+schema is unusually easy - immutable rows, uniformly distributed keys, no joins,
+no transactions across links - so the migration we would be pre-paying for is one
 of the cheapest possible. Pre-paying an expensive operational cost to avoid a
 cheap future migration is a bad trade.
 
@@ -271,10 +271,10 @@ cheap future migration is a bad trade.
 
 ### Alerts that would page
 
-* `fail_open_count > 0` sustained — limits are not being enforced
-* cache hit ratio below 85% — the database is about to take 3x its expected load
+* `fail_open_count > 0` sustained - limits are not being enforced
+* cache hit ratio below 85% - the database is about to take 3x its expected load
 * resolve 5xx rate above 0.1%
-* short-code collision — should be impossible; means duplicate `INSTANCE_ID`
+* short-code collision - should be impossible; means duplicate `INSTANCE_ID`
 
 ### Deliberately *not* alerted
 
@@ -292,5 +292,5 @@ metrics: they inform capacity planning but nobody should be woken for them.
 * **Analytics beyond a counter.** Referrers, geography, and time series are a
   separate pipeline; bolting them onto the resolve path would compromise it.
 * **Multi-region.** Everything above assumes one region. Global creates need
-  either regional instance-id ranges (easy — the id scheme already supports it)
+  either regional instance-id ranges (easy - the id scheme already supports it)
   or a different database (§5).

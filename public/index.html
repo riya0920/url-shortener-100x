@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>url-shortener: live sandbox</title>
+<style>
+  :root{
+    --bg:#f4f6f8; --panel:#ffffff; --ink:#151b21; --muted:#5d6b78;
+    --line:#dbe2e8; --accent:#1f4f8b; --ok:#1a7a53; --warn:#a8620d; --bad:#a32f2f;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --bg:#0d1217; --panel:#151d25; --ink:#e4ebf1; --muted:#94a3b1;
+      --line:#26313b; --accent:#79aae0; --ok:#4cbb8c; --warn:#d9a13c; --bad:#e0756e;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0d1217; --panel:#151d25; --ink:#e4ebf1; --muted:#94a3b1;
+    --line:#26313b; --accent:#79aae0; --ok:#4cbb8c; --warn:#d9a13c; --bad:#e0756e;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+  }
+  .wrap{max-width:900px;margin:0 auto;padding:32px 20px 64px}
+  header{border-bottom:2px solid var(--line);padding-bottom:18px;margin-bottom:26px}
+  h1{font-size:25px;margin:0 0 6px;letter-spacing:-.015em}
+  .sub{color:var(--muted);margin:0;max-width:64ch}
+  .sub a{color:var(--accent)}
+  h2{font-size:14px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);
+     margin:0 0 12px;font-family:var(--mono);font-weight:600}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:4px;
+         padding:20px;margin-bottom:18px}
+  label{display:block;font-size:13px;color:var(--muted);margin-bottom:5px}
+  input[type=text]{
+    width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:3px;
+    background:var(--bg);color:var(--ink);font-family:var(--mono);font-size:13.5px;
+  }
+  input:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  .row{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
+  .row>div{flex:1;min-width:220px}
+  button{
+    padding:9px 16px;border:1px solid var(--accent);background:var(--accent);
+    color:#fff;border-radius:3px;font-size:14px;font-weight:600;cursor:pointer;
+    font-family:inherit;white-space:nowrap;
+  }
+  button.ghost{background:transparent;color:var(--accent)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .out{
+    margin-top:14px;font-family:var(--mono);font-size:13px;
+    background:var(--bg);border:1px solid var(--line);border-radius:3px;
+    padding:12px;white-space:pre-wrap;word-break:break-all;min-height:20px;
+  }
+  .short{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px}
+  .short a{font-family:var(--mono);font-size:15px;color:var(--accent);font-weight:600}
+  .note{font-size:13px;color:var(--muted);margin:10px 0 0}
+  .bars{display:flex;gap:2px;height:34px;align-items:flex-end;margin:14px 0 8px;flex-wrap:wrap}
+  .bar{width:9px;border-radius:1px;background:var(--ok);transition:height .12s}
+  .bar.b429{background:var(--warn)}
+  .bar.berr{background:var(--bad)}
+  .legend{display:flex;gap:16px;font-size:12.5px;color:var(--muted);font-family:var(--mono)}
+  .legend span::before{content:"";display:inline-block;width:9px;height:9px;margin-right:5px;border-radius:1px}
+  .l-ok::before{background:var(--ok)}
+  .l-429::before{background:var(--warn)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:1px;
+        background:var(--line);border:1px solid var(--line);border-radius:3px;overflow:hidden}
+  .cell{background:var(--panel);padding:11px 13px}
+  .cell .k{font-size:11px;color:var(--muted);font-family:var(--mono);text-transform:uppercase;letter-spacing:.05em}
+  .cell .v{font-size:19px;font-weight:700;font-family:var(--mono);font-variant-numeric:tabular-nums}
+  code{font-family:var(--mono);font-size:13px;background:var(--bg);padding:1px 5px;border-radius:2px}
+  footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line);
+         font-size:13px;color:var(--muted)}
+  footer a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>url-shortener, running live</h1>
+  <p class="sub">
+    This page talks to the real service, not a mock. Every button below issues a genuine
+    HTTP request, and the rate limiter, cache and abuse policy you trip are the ones under test in
+    <a href="https://github.com/riya0920/url-shortener-100x">the repository</a>.
+  </p>
+</header>
+
+<section class="panel">
+  <h2>1. Shorten something</h2>
+  <div class="row">
+    <div>
+      <label for="target">Destination URL</label>
+      <input type="text" id="target" value="https://github.com/riya0920/url-shortener-100x" spellcheck="false">
+    </div>
+    <button id="create">Create link</button>
+  </div>
+  <div class="short" id="shortbox" hidden>
+    <span class="note">Short link:</span>
+    <a id="shortlink" href="#" target="_blank" rel="noopener"></a>
+    <button class="ghost" id="follow">Follow it</button>
+  </div>
+  <div class="out" id="createout">Nothing yet.</div>
+  <p class="note">
+    Try a <code>javascript:</code> URL, or an internal host like <code>http://169.254.169.254/</code>.
+    Both are refused on purpose: a shortener that accepts them becomes an XSS laundering service
+    and an SSRF pivot respectively.
+  </p>
+</section>
+
+<section class="panel">
+  <h2>2. Trip the rate limiter</h2>
+  <p class="note" style="margin-top:0">
+    Fires 80 requests back to back against the live token bucket. The bucket refills continuously,
+    so the first burst passes, the middle gets refused, and the tail recovers as tokens return.
+  </p>
+  <div class="row" style="margin-top:12px">
+    <button id="hammer">Send 80 requests</button>
+    <button class="ghost" id="reset">Reset counters</button>
+  </div>
+  <div class="bars" id="bars"></div>
+  <div class="legend">
+    <span class="l-ok">200 accepted</span>
+    <span class="l-429">429 refused</span>
+  </div>
+  <div class="out" id="hammerout">Nothing yet.</div>
+</section>
+
+<section class="panel">
+  <h2>3. Live service metrics</h2>
+  <div class="grid" id="metrics">
+    <div class="cell"><div class="k">links stored</div><div class="v" id="m-links">-</div></div>
+    <div class="cell"><div class="k">cache hit rate</div><div class="v" id="m-hit">-</div></div>
+    <div class="cell"><div class="k">cache entries</div><div class="v" id="m-size">-</div></div>
+    <div class="cell"><div class="k">breaker</div><div class="v" id="m-brk">-</div></div>
+  </div>
+  <p class="note">Polled from <code>GET /metrics</code> every two seconds.</p>
+</section>
+
+<footer>
+  Source, design doc and the measured load test:
+  <a href="https://github.com/riya0920/url-shortener-100x">github.com/riya0920/url-shortener-100x</a>.
+  Free hosting sleeps when idle, so the first request may take a moment to wake the service.
+</footer>
+
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let lastCode = null;
+
+async function jfetch(url, opts){
+  const r = await fetch(url, opts);
+  let body;
+  try { body = await r.json(); } catch { body = await r.text(); }
+  return { status: r.status, body };
+}
+
+$("create").addEventListener("click", async () => {
+  const target = $("target").value.trim();
+  $("createout").textContent = "POST /links ...";
+  $("shortbox").hidden = true;
+  const { status, body } = await jfetch("/links", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ target })
+  });
+  $("createout").textContent = status + "  " + JSON.stringify(body, null, 2);
+  if (status === 201 && body.code) {
+    lastCode = body.code;
+    const link = location.origin + "/" + body.code;
+    $("shortlink").textContent = link;
+    $("shortlink").href = link;
+    $("shortbox").hidden = false;
+  }
+  refreshMetrics();
+});
+
+$("follow").addEventListener("click", () => {
+  if (lastCode) window.open(location.origin + "/" + lastCode, "_blank", "noopener");
+});
+
+$("hammer").addEventListener("click", async () => {
+  const btn = $("hammer");
+  btn.disabled = true;
+  $("bars").innerHTML = "";
+  $("hammerout").textContent = "firing 80 concurrent requests ...";
+  const path = lastCode ? "/" + lastCode : "/healthz";
+
+  // Fired concurrently, not in sequence. A sequential loop in a browser manages
+  // roughly five requests a second, which is the same order as the bucket's
+  // refill rate, so the bucket never actually drains and the demo shows nothing.
+  // A burst is also what a rate limiter exists to survive.
+  const bars = [];
+  for (let i = 0; i < 80; i++) {
+    const bar = document.createElement("div");
+    bar.className = "bar";
+    bar.style.height = "10px";
+    $("bars").appendChild(bar);
+    bars.push(bar);
+  }
+
+  const results = await Promise.all(bars.map(async (bar) => {
+    try {
+      const r = await fetch(path, { redirect: "manual" });
+      // A 302 fetched with redirect:"manual" returns an opaque response whose
+      // status is 0. That is a successful resolve, not a network failure.
+      if (r.status === 429) { bar.classList.add("b429"); bar.style.height = "16px"; return "limited"; }
+      if (r.type === "opaqueredirect" || (r.status >= 200 && r.status < 400)) {
+        bar.style.height = "32px"; return "ok";
+      }
+      bar.classList.add("berr"); bar.style.height = "12px"; return "other";
+    } catch {
+      bar.classList.add("berr"); bar.style.height = "12px"; return "other";
+    }
+  }));
+
+  const ok = results.filter(r => r === "ok").length;
+  const limited = results.filter(r => r === "limited").length;
+  const other = results.filter(r => r === "other").length;
+
+  const summary = limited === 0
+    ? "No refusals: the bucket still had tokens. Press again straight away, before it refills."
+    : "Those " + limited + " refusals are the real token bucket. It holds a fixed number of tokens "
+      + "and refills continuously, so a burst this size drains it and the tail gets a 429 with a "
+      + "Retry-After header.";
+  $("hammerout").textContent =
+    "accepted " + ok + "   refused(429) " + limited + "   other " + other
+    + "\npath: " + path + "\n\n" + summary;
+  btn.disabled = false;
+  refreshMetrics();
+});
+
+$("reset").addEventListener("click", async () => {
+  await fetch("/admin/reset-metrics", { method: "POST" });
+  $("bars").innerHTML = "";
+  $("hammerout").textContent = "Counters reset.";
+  refreshMetrics();
+});
+
+async function refreshMetrics(){
+  try {
+    const r = await fetch("/metrics");
+    const m = await r.json();
+    const cache = m.cache || {};
+    $("m-links").textContent = m.links ?? " - ";
+    $("m-size").textContent  = cache.size ?? " - ";
+    $("m-hit").textContent   = (typeof cache.hit_ratio === "number")
+      ? Math.round(cache.hit_ratio * 100) + "%" : " - ";
+    $("m-brk").textContent   = (m.limiter && m.limiter.breaker && m.limiter.breaker.state) || " - ";
+  } catch {}
+}
+refreshMetrics();
+setInterval(refreshMetrics, 2000);
+</script>
+</body>
+</html>

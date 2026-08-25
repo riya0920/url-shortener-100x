@@ -6,15 +6,14 @@
 ## Why a second generator exists
 
 `loadtest.py` is **closed-loop**: each worker waits for its response before
-issuing the next request. That is the easy design and it has one fatal property —
-when the server slows down, the generator slows down with it. Offered load becomes
+issuing the next request. That is the easy design and it has one fatal property - when the server slows down, the generator slows down with it. Offered load becomes
 a function of service time, the queue never builds, and the reported p99 is the
 p99 of a workload that politely backed off. This is **coordinated omission**, and
 it is why closed-loop numbers look good exactly where they matter least.
 
 An open-loop generator fixes it by making arrivals independent of responses:
 
-* **Arrivals are a Poisson process** at a fixed rate. Not evenly spaced — real
+* **Arrivals are a Poisson process** at a fixed rate. Not evenly spaced - real
   arrivals are not, and evenly spaced arrivals understate queueing because they
   never collide.
 * **Latency is measured from the SCHEDULED time**, not from when the request was
@@ -30,7 +29,7 @@ An open-loop generator fixes it by making arrivals independent of responses:
 ## What the sweep answers
 
 The spec asks for the concurrency at which p99 crosses a budget. Under a closed
-loop that question is malformed — every concurrency level produces a *different*
+loop that question is malformed - every concurrency level produces a *different*
 offered rate, so the sweep confounds "more load" with "more clients". The open-
 loop sweep varies the **offered rate** and holds the arrival process fixed, which
 is the version where the knee means something.
@@ -361,7 +360,7 @@ async def sweep_isolated(rates, duration: float, budget_ms: float, repeats: int 
       * *The write-ahead log.* `PRAGMA wal_checkpoint(TRUNCATE)` took a 4.1 MB WAL
         to zero bytes and changed nothing. Rejected.
       * *The data.* Restarting the process against the *same* database files
-        restored performance immediately. Rejected — it was not the rows.
+        restored performance immediately. Rejected - it was not the rows.
 
     **The actual cause.** Every earlier run had left its server process alive.
     Eight cores were carrying six orphaned uvicorn processes plus unrelated work,
@@ -372,7 +371,7 @@ async def sweep_isolated(rates, duration: float, budget_ms: float, repeats: int 
 
     So the fix is not a workaround. A benchmark that leaves processes running is
     measuring its own history, and the only reliable defence is explicit teardown
-    in a `finally` — which is what this function does, along with recording host
+    in a `finally` - which is what this function does, along with recording host
     CPU alongside every measurement so a contended run is visible in the data
     instead of being reconstructed afterwards.
 

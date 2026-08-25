@@ -1,15 +1,14 @@
 """Abuse controls: the part of a link shortener that is not a systems problem.
 
 A shortener is an open redirector with a database. Every one of them becomes a
-phishing and malware distribution channel, and the controls are not optional —
-they are the difference between a service and a liability.
+phishing and malware distribution channel, and the controls are not optional - they are the difference between a service and a liability.
 
 ## What is here, and the reasoning for each
 
 **Blocklist at create time, not at resolve time.** Rejecting on create is cheap
 (once per link) and rejecting on resolve is expensive (once per click, on the hot
 path). It is also the only one that gives the abuser useful feedback, which is a
-real cost — an attacker learns the blocklist by probing. The trade is made
+real cost - an attacker learns the blocklist by probing. The trade is made
 deliberately in favour of not putting a policy check on a path that has to run at
 thousands of requests per second, and the residual risk is handled by takedown.
 
@@ -22,7 +21,7 @@ easy to get wrong: marking a row in the database while a hot code sits in an
 in-process LRU on every instance means the link keeps resolving. On one instance
 that is a local cache purge. Across N instances it is a distributed cache
 invalidation problem, and it is now solved by a **durable, replayable
-invalidation log** rather than a fire-and-forget message — see
+invalidation log** rather than a fire-and-forget message - see
 `invalidation.py`. `TakedownList` reports a measured propagation bound instead of
 the "UNBOUNDED" it used to have to admit to.
 
@@ -98,7 +97,7 @@ def registrable_suffix_match(host: str, domains) -> bool:
 
     `evil.bit.ly` must match `bit.ly`. A plain set membership test misses that,
     which is a blocklist that any attacker bypasses with one label. This is not a
-    public-suffix-list implementation and does not claim to be — it is a suffix
+    public-suffix-list implementation and does not claim to be - it is a suffix
     match on labels, which is the correct semantics for "this domain and anything
     under it".
     """
@@ -160,7 +159,7 @@ class TakedownList:
     instances exist, so `add()` reports "every instance polling at interval T has
     applied this within T", measured rather than assumed. Turning a bound into a
     confirmation needs instance registration and acks, which is service discovery
-    and is out of scope here — and is said so rather than glossed.
+    and is out of scope here - and is said so rather than glossed.
     """
 
     def __init__(self, ttl_bound_s: float = 0.0, bus=None, poll_interval_s: float = None):
@@ -233,7 +232,7 @@ class TakedownList:
 
 
 INTERSTITIAL_HTML = """<!doctype html><meta charset="utf-8">
-<title>Leaving &mdash; check this link</title>
+<title>Leaving - check this link</title>
 <style>body{font:15px/1.6 -apple-system,Segoe UI,Roboto,sans-serif;max-width:640px;
 margin:12vh auto;padding:0 20px;color:#222}
 .dest{background:#f6f6f6;border:1px solid #e2e2e2;border-radius:6px;padding:12px;
@@ -258,7 +257,7 @@ def render_interstitial(target: str, reason: str) -> str:
 
     Two things this page must not do: render the target unescaped (that is stored
     XSS on your own domain, handed to you by whoever created the link), and load
-    anything from the destination for a preview — a favicon fetch alone confirms
+    anything from the destination for a preview - a favicon fetch alone confirms
     to the attacker that the link was opened and by whom.
     """
     import html as _html

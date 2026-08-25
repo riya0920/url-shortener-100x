@@ -176,12 +176,33 @@ def flush_cache():
     return {"evicted": before}
 
 
+@app.get("/", response_class=HTMLResponse)
+def sandbox():
+    """The live sandbox page.
+
+    Declared before the /{code} resolver because FastAPI matches in definition
+    order, and a bare "/" would otherwise be a candidate for the catch-all.
+    Serving it from the app rather than a CDN keeps the demo on the same origin
+    as the API, so the page can call it without CORS.
+    """
+    page = os.path.join(os.path.dirname(__file__), "..", "..", "public", "index.html")
+    try:
+        with open(page, encoding="utf-8") as fh:
+            return HTMLResponse(fh.read())
+    except FileNotFoundError:
+        return HTMLResponse("<h1>url-shortener</h1><p>API is up. See /metrics.</p>")
+
+
 @app.get("/metrics")
 def metrics():
     return {
         "instance": INSTANCE_ID,
         "limiter_enabled": LIMITER_ENABLED,
         "limiter_backend": LIMITER_BACKEND,
+        # Surfaced so the live sandbox can show the bucket it is actually
+        # running with. Without it, "why did nothing get refused" is
+        # unanswerable from outside the process.
+        "limiter_config": {"capacity": CAPACITY, "refill_per_s": REFILL},
         "cache": cache.stats(),
         "singleflight_collapsed": flight.collapsed,
         "hit_counter": hits.stats(),

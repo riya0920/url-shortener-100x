@@ -1,4 +1,4 @@
-"""Cross-instance cache invalidation — closing the gap takedown left open.
+"""Cross-instance cache invalidation - closing the gap takedown left open.
 
 `TakedownList` could purge the local cache and nothing else. On one instance that
 is a complete takedown; across N instances the withdrawn code keeps redirecting
@@ -8,7 +8,7 @@ and that honesty is not a fix.
 
 This is the fix, and the thing worth understanding is that **cache invalidation
 across instances is a distributed-systems problem, not a cache problem.** The
-naive version — "publish a message, everyone deletes" — is at-most-once delivery
+naive version - "publish a message, everyone deletes" - is at-most-once delivery
 of a correctness-critical event. An instance that is restarting, GC-paused, or
 briefly partitioned when the message goes out never learns, and it keeps serving
 a phishing link with no error anywhere.
@@ -43,8 +43,7 @@ fleet grows, and a window measured on a single instance understates a deployment
 also, on its own, the *wrong* choice for this job: Redis pub/sub is fire-and-
 forget, so a subscriber that is disconnected for two seconds silently misses
 every invalidation in that window and no error is raised anywhere. The
-production shape is pub/sub for latency **plus** a durable log for correctness —
-push to make it fast, poll to make it certain. The log is the part that cannot be
+production shape is pub/sub for latency **plus** a durable log for correctness - push to make it fast, poll to make it certain. The log is the part that cannot be
 skipped, which is why it is the part that is implemented and tested here.
 
 ## What is still not solved
@@ -83,7 +82,7 @@ class SqliteInvalidationBus:
 
     SQLite here for the same reason as everywhere else in this repo: it is what
     exists. The shape is what matters and it ports directly to a Postgres table
-    or a Kafka topic — an append-only sequence that consumers track an offset
+    or a Kafka topic - an append-only sequence that consumers track an offset
     into. Nothing about the design depends on it being SQLite.
     """
 

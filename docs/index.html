@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rate-Limited URL Shortener</title><style>
+:root{
+  --bg:#f3f5f7; --panel:#fff; --ink:#141a20; --muted:#5b6873; --faint:#85929e;
+  --line:#d9e0e6; --line2:#bcc7d0; --accent:#1d4e7c; --ok:#1a7a56; --warn:#9c6410;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0c1116; --panel:#141b22; --ink:#e3eaf1; --muted:#93a1ae; --faint:#6c7885;
+  --line:#242f39; --line2:#36434e; --accent:#7fadde; --ok:#4dbd8d; --warn:#d8a13d;
+}}
+:root[data-theme="dark"]{
+  --bg:#0c1116; --panel:#141b22; --ink:#e3eaf1; --muted:#93a1ae; --faint:#6c7885;
+  --line:#242f39; --line2:#36434e; --accent:#7fadde; --ok:#4dbd8d; --warn:#d8a13d;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:16px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;}
+.wrap{max-width:880px;margin:0 auto;padding:36px 20px 72px}
+header{border-bottom:2px solid var(--line2);padding-bottom:20px;margin-bottom:28px}
+.kicker{font-family:var(--mono);font-size:11.5px;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--muted);margin-bottom:10px}
+h1{font-size:clamp(27px,4.6vw,38px);margin:0 0 10px;letter-spacing:-.02em;line-height:1.12}
+.tag{color:var(--muted);margin:0;max-width:66ch;font-size:17px}
+.cta{display:flex;gap:10px;flex-wrap:wrap;margin-top:20px}
+.btn{display:inline-block;padding:9px 16px;border-radius:3px;text-decoration:none;
+  font-size:14.5px;font-weight:600;border:1px solid var(--accent);}
+.btn.solid{background:var(--accent);color:#fff}
+.btn.solid:where(:hover,:focus-visible){opacity:.9}
+.btn.out{color:var(--accent);background:transparent}
+h2{font-size:13px;font-family:var(--mono);text-transform:uppercase;
+  letter-spacing:.08em;color:var(--muted);margin:34px 0 14px;font-weight:600}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:20px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:1px;
+  background:var(--line);border:1px solid var(--line);border-radius:4px;overflow:hidden}
+.cell{background:var(--panel);padding:13px 15px}
+.cell .k{font-size:10.5px;font-family:var(--mono);text-transform:uppercase;
+  letter-spacing:.06em;color:var(--faint)}
+.cell .v{font-size:21px;font-weight:700;font-family:var(--mono);
+  font-variant-numeric:tabular-nums;line-height:1.25}
+.finds{display:flex;flex-direction:column;gap:10px}
+.find{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--accent);
+  border-radius:3px;padding:15px 17px}
+.find h3{margin:0 0 5px;font-size:15.5px}
+.find p{margin:0;color:var(--muted);font-size:14.5px}
+.find p b{color:var(--ink);font-variant-numeric:tabular-nums}
+table{width:100%;border-collapse:collapse;font-size:14px}
+.scroll{overflow-x:auto;border:1px solid var(--line);border-radius:4px;background:var(--panel)}
+th,td{padding:9px 13px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+th{font-family:var(--mono);font-size:10.5px;text-transform:uppercase;
+  letter-spacing:.06em;color:var(--faint);font-weight:600}
+td{font-variant-numeric:tabular-nums}
+tr:last-child td{border-bottom:none}
+code{font-family:var(--mono);font-size:13.5px;background:var(--bg);padding:1px 5px;border-radius:2px}
+.note{color:var(--muted);font-size:14px;margin:12px 0 0}
+footer{margin-top:44px;padding-top:18px;border-top:1px solid var(--line);
+  font-family:var(--mono);font-size:12px;color:var(--faint)}
+footer a{color:var(--accent)}
+a:focus-visible,.btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style></head><body><div class="wrap">
+<header>
+  <div class="kicker">distributed systems / rate limiting</div>
+  <h1>Rate-Limited URL Shortener</h1>
+  <p class="tag">Multi-instance by design, because the interesting bugs (shared limiter state, duplicate codes, cache coherence) do not exist at one instance.</p>
+  <div class="cta"><a class="btn out" href="https://github.com/riya0920/url-shortener-100x">Source on GitHub</a></div>
+</header>
+<h2>Measured</h2>
+<div class="grid"><div class="cell"><div class="k">tests</div><div class="v">112</div></div><div class="cell"><div class="k">limiter backends</div><div class="v">2</div></div><div class="cell"><div class="k">link stores</div><div class="v">2</div></div><div class="cell"><div class="k">failure drills</div><div class="v">2</div></div><div class="cell"><div class="k">design doc</div><div class="v">yes</div></div></div>
+
+<h2>What this project actually found</h2>
+<div class="finds"><div class="find"><h3>Two limiter backends, cross-verified against each other</h3><p>SQLite and Redis-Lua implement the same token bucket and are checked by one conformance suite. Two implementations that agree is evidence; one implementation is an assumption.</p></div><div class="find"><h3>Fail open is a product decision before it is a technical one</h3><p>Failing closed turns a Redis outage into a total outage and makes a protective control the single point of failure. The limiter fails open, deliberately, and the reasoning is written down.</p></div><div class="find"><h3>Refusing javascript: and internal hosts is a security control</h3><p>A shortener that accepts <code>javascript:</code> becomes an XSS laundering service, and one that accepts link-local addresses becomes an SSRF pivot. Both are refused at create time.</p></div><div class="find"><h3>A circuit breaker added because a drill found the problem</h3><p>The breaker is not decoration. A scripted failure drill produced the behaviour it fixes, and the fix was then measured.</p></div></div>
+
+<footer>
+  <a href="https://github.com/riya0920/url-shortener-100x">github.com/riya0920/url-shortener-100x</a>
+</footer>
+</div></body></html>

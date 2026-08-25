@@ -23,7 +23,7 @@ than after:
    floor, not a ceiling.
 2. **Closed-loop generator.** Each worker waits for its response before issuing
    the next request, so a slow response also slows the offered load. This
-   **understates tail latency** under saturation — the classic coordinated-omission
+   **understates tail latency** under saturation - the classic coordinated-omission
    problem. An open-loop generator is the roadmap fix.
 
 ## Result 1: the first run was 202 RPS, and the profile said why
@@ -33,8 +33,8 @@ The initial measurement: **202 RPS, p99 3801 ms**.
 The cause was not subtle. Every resolve opened a fresh SQLite connection and
 committed a row to count the hit, so the read path was doing a synchronous
 durable write per request. That is the exact anti-pattern
-[DESIGN_100X.md](DESIGN_100X.md) already warned about — *"counting on the links
-row would turn every resolve into a write"* — written down, and then done anyway.
+[DESIGN_100X.md](DESIGN_100X.md) already warned about - *"counting on the links
+row would turn every resolve into a write"* - written down, and then done anyway.
 
 **That is the argument for load-testing rather than reasoning.** The doc was
 right and the code still shipped the bug.
@@ -43,7 +43,7 @@ Two fixes, both in the direction the doc named:
 
 * **Batched hit counting** (`counters.py`): increment in memory, flush every 2 s
   in one transaction. Trade: up to 2 s of counts lost on a hard crash. Analytics
-  accuracy is worth less than redirect availability — but a billing counter would
+  accuracy is worth less than redirect availability - but a billing counter would
   need a different design.
 * **Thread-local connection reuse**: opening a connection per request re-parses
   the schema and re-applies PRAGMAs every time.
@@ -67,7 +67,7 @@ workload, only the limiter configuration changed:
 | limiter on, SQLite | 311 | 85.8 ms | 276.1 ms | **4310 ms** | 0.886 |
 | limiter on, Redis-Lua* | 429 | 142.3 ms | 245.5 ms | **299 ms** | 0.917 |
 
-\* `fakeredis` — a real Redis implementation executing the **actual Lua script**,
+\* `fakeredis` - a real Redis implementation executing the **actual Lua script**,
 but in-process. See the caveat below.
 
 ### Reading this table
@@ -79,7 +79,7 @@ limiter. An in-process limiter would be free and would also be wrong at N≥2.
 
 **The SQLite p99 of 4310 ms is the interesting number.** `BEGIN IMMEDIATE` takes
 a database-wide write lock, so every request queues behind every other request.
-Under 64 concurrent clients that produces a pathological tail — the *median* is
+Under 64 concurrent clients that produces a pathological tail - the *median* is
 fine at 85 ms while the 99th percentile is 50× worse. A mean would have hidden
 this completely.
 
@@ -92,21 +92,21 @@ result that matters, not the absolute RPS.
 
 `fakeredis` runs in the server process. There is **no network hop, no separate
 process, and no real Redis event loop**. Its *throughput* is therefore not a
-prediction of production Redis — real Redis would add ~0.1–0.5 ms of network
+prediction of production Redis - real Redis would add ~0.1-0.5 ms of network
 round-trip per call but would not hold a global write lock.
 
 What the comparison legitimately shows is the **contention profile**: global
 write lock versus per-key operations. The tail-latency ratio is the signal; the
 RPS column is not.
 
-## Result 3: p99 < 50 ms — the spec's bar
+## Result 3: p99 < 50 ms - the spec's bar
 
 The spec asks for max RPS at **p99 < 50 ms** on the resolve path.
 
 | configuration | p99 | meets the bar? |
 |---|---|---|
 | limiter off, 64 concurrent | 64.5 ms | no |
-| limiter off, 16 concurrent | *not yet measured* | — |
+| limiter off, 16 concurrent | *not yet measured* | - |
 
 **This build does not currently meet p99 < 50 ms at 64 concurrent clients**, and
 the honest reason is that the load generator shares the machine. Finding the
@@ -130,8 +130,7 @@ p99 after flush             34.5 ms
 ```
 
 **64 concurrent clients produced 19 backend misses, not 64.** SingleFlight
-collapsed the herd, and p99 did not degrade in the second following the flush —
-the difference between 40.0 and 34.5 ms is noise, not a recovery cost.
+collapsed the herd, and p99 did not degrade in the second following the flush - the difference between 40.0 and 34.5 ms is noise, not a recovery cost.
 
 ## Drill 2: limiter store unreachable (fail-open)
 
@@ -148,7 +147,7 @@ counter climbed so an alert would fire.
 
 **An unflattering detail worth stating**: only 48 requests completed in 5 seconds
 at 16 concurrent clients, because every request pays a full TCP connection
-timeout to the dead Redis before failing open. **Fail-open is not free** — it
+timeout to the dead Redis before failing open. **Fail-open is not free** - it
 converts an availability failure into a latency failure. The production fix is a
 circuit breaker that trips after N consecutive failures and stops attempting the
 connection. That is not implemented, and the drill is what exposed the need.

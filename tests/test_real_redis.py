@@ -1,6 +1,6 @@
 """The Redis paths, against a real Redis server.
 
-Everything Redis in this repo has run against **fakeredis** — which executes the
+Everything Redis in this repo has run against **fakeredis** - which executes the
 same Lua, and is still an in-process Python reimplementation. Two classes of thing
 it cannot tell you:
 
@@ -10,7 +10,7 @@ it cannot tell you:
     `invalidation.py` was written and never executed
 
 Both are checked here. The suite skips when `SHORTENER_REDIS_URL` is unset, so
-the repo stays runnable without a server — and skipping is reported rather than
+the repo stays runnable without a server - and skipping is reported rather than
 counted as a pass.
 """
 import json

@@ -1,0 +1,27 @@
+# Render blueprint. Import this repository at https://render.com/deploy and the
+# sandbox comes up with no further configuration.
+#
+# The service runs on SQLite for both the link store and the rate limiter, which
+# is the default and needs no attached database. Postgres and Redis are the other
+# supported backends; both are selected by environment variable and both are
+# exercised by the conformance suite, but neither is required to run the demo.
+services:
+  - type: web
+    name: url-shortener-100x
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn shortener.app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHONPATH
+        value: src
+      - key: SHORTENER_DATA
+        value: /tmp/shortener-data
+      # Deliberately small so a browser burst visibly drains the bucket. The
+      # defaults (60 capacity, 10/s refill) are sized for the load test, where a
+      # burst of 80 barely registers, which makes for a demo that shows nothing.
+      - key: RATE_CAPACITY
+        value: "20"
+      - key: RATE_REFILL_PER_S
+        value: "2"

@@ -1,4 +1,4 @@
-"""The Postgres link store — the backend SQLite has been standing in for.
+"""The Postgres link store - the backend SQLite has been standing in for.
 
     SHORTENER_PG_DSN=postgresql://... LINK_BACKEND=postgres  python -m uvicorn ...
 
@@ -16,7 +16,7 @@ trip instead of two, and no exception used for control flow across a network.
 **Hit counting is an upsert with an atomic add**, `ON CONFLICT DO UPDATE SET
 hits = link_hits.hits + EXCLUDED.hits`. The SQLite path does the same thing, and
 the reason it matters more here is that Postgres actually has concurrent writers
-to contend with — this is the statement that decides whether two instances
+to contend with - this is the statement that decides whether two instances
 flushing their counters at the same moment lose one of the batches.
 
 **Expiry is `TIMESTAMPTZ`, not epoch milliseconds.** The SQLite store stores
@@ -30,7 +30,7 @@ three other modules for no benefit.
 
 ## Connections
 
-One per thread, reused — the same shape as `LinkStore` and for the same reason.
+One per thread, reused - the same shape as `LinkStore` and for the same reason.
 The job-queue backend in this portfolio learned that the hard way: it opened one
 connection per operation, which passed a conformance suite doing a handful of
 calls per test and then took down the machine's networking under a benchmark.

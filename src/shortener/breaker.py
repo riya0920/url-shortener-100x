@@ -1,4 +1,4 @@
-"""Circuit breaker — the gap the fail-open drill exposed.
+"""Circuit breaker - the gap the fail-open drill exposed.
 
 The drill showed the limiter failing open correctly when its store was dead, but
 also showed the cost: **only 48 requests completed in 5 seconds at 16 concurrent
