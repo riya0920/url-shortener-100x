@@ -5,13 +5,13 @@
 Working multi-instance code, correctness tests that spawn real processes, and a
 design review that argues its own decisions - including the ones it rejected.
 
-**[See the measured results](https://riya0920.github.io/url-shortener-100x/)** &nbsp;·&nbsp; [Design doc](docs/DESIGN_100X.md) &nbsp;·&nbsp; [Load test method](docs/LOADTEST.md)
+**[Open the live sandbox](https://url-shortener-100x.onrender.com)** &nbsp;·&nbsp; [Measured results](https://riya0920.github.io/url-shortener-100x/) &nbsp;·&nbsp; [Design doc](docs/DESIGN_100X.md) &nbsp;·&nbsp; [Load test method](docs/LOADTEST.md)
 
-[![Deploy to Render](https://img.shields.io/badge/deploy-to%20Render-46E3B7)](https://render.com/deploy?repo=https://github.com/riya0920/url-shortener-100x)
+Create a short link, watch it resolve, then fire a burst of 80 requests and watch the real
+token bucket refuse the tail. A 60-request burst against the deployed service returns
+**30 accepted and 30 refused**, from the same limiter the conformance suite tests.
 
-One click brings up the **live sandbox**: create a short link, watch it resolve, then fire
-a burst of 80 requests and watch the real token bucket refuse the tail. Nothing is simulated.
-
+Free hosting sleeps after 15 minutes idle, so the first request may take a moment.
 
 ## The two artifacts
 
