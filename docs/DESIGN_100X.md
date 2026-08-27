@@ -82,18 +82,54 @@ three.
 
 ### 3.1 Short-code generation
 
+**This section reversed itself.** Snowflake was chosen here on an argument that
+does not survive reading the storage layer, and the demo shows the consequence.
+The original table is kept below the revision, because a design doc that quietly
+edits its losing arguments is a worse document than one that shows them.
+
 | option | verdict |
 |---|---|
 | auto-increment integer | **rejected.** Coordination on the hot path; the sequence becomes the write bottleneck exactly when you scale out. Also enumerable - `/1`, `/2` walks the corpus. |
-| random base62 + uniqueness check | **rejected.** Requires a read + retry loop on every create. Works fine, but the check is unremovable and collision probability grows with the corpus. |
 | UUID4 | **rejected.** 22+ characters is a bad short link, and random ids destroy index insert locality. |
-| **snowflake (ts \| instance \| seq)** | **chosen.** No hot-path coordination, no uniqueness check, k-sorted for index locality. |
+| snowflake (ts \| instance \| seq) | **kept, not default.** No hot-path coordination and k-sorted inserts. Costs 10 characters, and is enumerable - see below. `CODE_SCHEME=snowflake`. |
+| **random base62, 7 chars** | **chosen.** Three characters shorter, no structure to walk, and the "uniqueness check" this doc rejected it for does not exist. |
 
-**What it costs.** Instance ids must be unique - that is still coordination, just
-moved to startup, and a duplicated instance id silently produces duplicate codes.
-Ids leak creation time and, given two links, a rough creation rate. Acceptable
-for public short links; **not** acceptable if codes were capability tokens, which
-is the condition under which this decision flips.
+**The error.** The rejection read: *"requires a read + retry loop on every
+create... the check is unremovable."* There is no read. `code` is the primary key
+in both backends, so the `INSERT` the create was already issuing reports the
+conflict itself - SQLite raises `IntegrityError`, Postgres returns no row from
+`ON CONFLICT DO NOTHING`, and `store.py` was already translating both to
+`KeyError`. The check was never on the hot path, because it was never a separate
+operation. Only the retry is new, and it is `CodeAllocator`, twelve lines.
+
+**What the choice actually costs.** Collision probability per create is
+`stored_links / 62**7`: 1 in 350,000 at ten million links, 1 in 3.5 million at
+one million. Bounded at five attempts, because exhausting them means a broken rng
+or a duplicated `INSTANCE_ID`, not bad luck, and that should fail loudly. The real
+cost is index locality - random keys scatter B-tree inserts where k-sorted ones
+stay local. This service resolves far more often than it creates, so the trade
+runs the right way; in a write-heavy store it would not.
+
+**What snowflake cost, which this doc did not say.** It rejected the
+auto-increment integer for being enumerable, then shipped a scheme that is
+enumerable too. Codes issued in the same millisecond are consecutive integers
+under base62 - the live demo produced `GABebxPvHs`, `GABebxPvHt`, `GABebxPvHu` -
+so decoding one code and adding one yields its neighbour. It is weaker than
+`/1, /2, /3`, since each millisecond skipped costs the attacker 2**22 candidates,
+but it is the same class of flaw and it went unnamed for the whole document.
+`test_snowflake_codes_made_together_are_enumerable` now pins the behaviour.
+
+**Unchanged costs of snowflake, for anyone selecting it.** Instance ids must be
+unique - still coordination, just moved to startup, and a duplicated instance id
+silently produces duplicate codes. Ids leak creation time and, given two links, a
+rough creation rate. Acceptable for public short links; **not** acceptable if
+codes were capability tokens, which is the condition under which this decision
+flips - and the condition under which the enumerability above stops being
+cosmetic.
+
+**Still open.** Random codes can spell things. Real shorteners filter a profanity
+and reserved-word list at generation; this one does not, and that is a gap rather
+than a decision.
 
 **Failure handling:** a backwards clock step could repeat a (ms, sequence) pair.
 Small drift spins until the clock catches up; a jump over 5 s raises rather than
@@ -287,8 +323,11 @@ metrics: they inform capacity planning but nobody should be woken for them.
   deployment needs URL reputation checks at create time, a takedown path, and an
   interstitial for flagged targets. This is a bigger problem than the scaling
   work above and is entirely absent.
-* **Custom aliases.** Vanity codes reintroduce the uniqueness check that
-  snowflake ids let us avoid, and need their own namespace and reservation flow.
+* **Custom aliases.** Vanity codes need their own namespace and reservation flow.
+  (This bullet used to say they "reintroduce the uniqueness check that snowflake
+  ids let us avoid." Nothing is reintroduced - the primary key was always doing
+  the check, and `CodeAllocator` already handles a rejected code. What vanity
+  codes actually add is a reservation flow and a squatting problem.)
 * **Analytics beyond a counter.** Referrers, geography, and time series are a
   separate pipeline; bolting them onto the resolve path would compromise it.
 * **Multi-region.** Everything above assumes one region. Global creates need

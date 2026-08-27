@@ -1,6 +1,6 @@
 # Rate-Limited URL Shortener + the 100x Design Doc
 
-![tests](https://img.shields.io/badge/tests-112%20passing-1a7a56) [![demo](https://img.shields.io/badge/demo-live-1d4e7c)](https://riya0920.github.io/url-shortener-100x/) ![license](https://img.shields.io/badge/license-MIT-555555)
+![tests](https://img.shields.io/badge/tests-128%20passing-1a7a56) [![demo](https://img.shields.io/badge/demo-live-1d4e7c)](https://riya0920.github.io/url-shortener-100x/) ![license](https://img.shields.io/badge/license-MIT-555555)
 
 Working multi-instance code, correctness tests that spawn real processes, and a
 design review that argues its own decisions - including the ones it rejected.
@@ -27,7 +27,7 @@ Free hosting sleeps after 15 minutes idle, so the first request may take a momen
 
 ```bash
 pip install -r requirements.txt
-make test        # 112 tests with Redis + Postgres, 78 without (the rest skip)
+make test        # 128 tests; 105 pass without Redis/Postgres, 23 skip
 make sweep       # open-loop capacity sweep, fresh server per point
 make compare     # open loop vs closed loop, paired
 make run         # single instance on :8000
@@ -168,17 +168,48 @@ a constructor flag, not a hardcoded assumption, and both paths are tested.
 
 The doc walks through [exactly what happens in the next 500 ms](docs/DESIGN_100X.md#41-redis-dies--what-happens-in-the-next-500-ms).
 
-## Short codes: snowflake, and what it costs
+## Short codes: the decision this project got wrong, then reversed
 
-`timestamp(41) | instance(10) | sequence(12)`, rendered base62. No coordination
-on the hot path and no uniqueness check - unlike random base62, which needs a
-read-and-retry on every create, or an auto-increment integer, which makes a
-shared sequence the write bottleneck exactly when you scale out.
+The first version used snowflake ids - `timestamp(41) | instance(10) |
+sequence(12)`, rendered base62 - and rejected random codes for needing "a
+uniqueness check on every create."
 
-The costs are named rather than hidden: instance ids must be unique (coordination
-moved to startup, not eliminated), and ids leak creation time plus a rough
-creation rate. Fine for public short links; **not** fine if codes were capability
-tokens.
+**There is no check.** `code` is the primary key, so the `INSERT` already reports
+a collision; `store.py` was translating it to `KeyError` the whole time. The
+rejected option was rejected for a cost it does not have.
+
+It cost two things to find out:
+
+| | snowflake | random (now default) |
+|---|---|---|
+| code length | 10 chars, 11 from 2038 | **7 chars** |
+| link on this host | 42 chars | **39 chars** |
+| link on a 6-char domain | 17 chars | **14 chars** - shorter than bit.ly |
+| guessable from a neighbour | **yes** - `GABebxPvHs`, `Ht`, `Hu` are consecutive | no |
+| collision rate | zero by construction | 1 in 350,000 at 10M links |
+| index insert locality | k-sorted, local | scattered |
+
+The enumerability is the sharper of the two, because this project's own design
+doc rejected the auto-increment integer for exactly that flaw and then shipped a
+scheme with a quieter version of it.
+
+Snowflake is still in the tree and still selectable - the doc argues the two
+against each other, and an argument whose losing side cannot be run is an
+assertion:
+
+```bash
+CODE_SCHEME=random CODE_LENGTH=7 make run     # default
+CODE_SCHEME=snowflake make run                # the original
+```
+
+Costs that still apply when you select snowflake: instance ids must be unique
+(coordination moved to startup, not eliminated), and ids leak creation time plus
+a rough creation rate. Fine for public short links; **not** fine if codes were
+capability tokens - the case where enumerability stops being cosmetic.
+
+Index locality is the one real thing random codes give up. This service resolves
+far more often than it creates, so the trade runs the right way here. It would
+not in a write-heavy store.
 
 A backwards clock step could repeat a `(ms, sequence)` pair, so small drift spins
 until the clock catches up and a jump over 5 s **raises** - loud beats silently

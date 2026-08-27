@@ -25,3 +25,10 @@ services:
         value: "20"
       - key: RATE_REFILL_PER_S
         value: "2"
+      # Explicit rather than relying on the default, because code length is the
+      # first thing a visitor notices. Flip to "snowflake" in the Render
+      # dashboard to see the 10-character scheme the design doc argues against.
+      - key: CODE_SCHEME
+        value: "random"
+      - key: CODE_LENGTH
+        value: "7"

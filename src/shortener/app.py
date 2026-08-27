@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 from .breaker import BreakerGuardedLimiter
 from .invalidation import InvalidationPoller, SqliteInvalidationBus
 from .counters import HitCounter
-from .ids import SnowflakeGenerator
+from .ids import CodeAllocator, build_generator
 from .limiter import FailOpenLimiter, RateLimiter, RedisStore, SqliteStore
 from .abuse import ALLOW, INTERSTITIAL, REFUSE, ReputationPolicy, TakedownList, render_interstitial
 from .store import LinkStore, LruCache, SingleFlight
@@ -32,6 +32,15 @@ LIMITER_ENABLED = os.environ.get("LIMITER_ENABLED", "1") != "0"
 # limiter turned out to be the dominant cost and "which backend" is therefore a
 # throughput decision rather than a deployment detail.
 LIMITER_BACKEND = os.environ.get("LIMITER_BACKEND", "sqlite")
+# random | snowflake. Random is the default: 7 characters instead of 10, and no
+# structure for a holder of one code to walk to its neighbours. Snowflake stays
+# selectable because the design doc argues the two against each other, and an
+# argument whose losing side cannot be run is an assertion.
+CODE_SCHEME = os.environ.get("CODE_SCHEME", "random")
+CODE_LENGTH = int(os.environ.get("CODE_LENGTH", "7"))
+# Bounded. Exhaustion means a duplicated INSTANCE_ID or a broken rng, not bad
+# luck, so it must fail loudly instead of looping.
+CODE_MAX_ATTEMPTS = int(os.environ.get("CODE_MAX_ATTEMPTS", "5"))
 
 os.makedirs(DATA, exist_ok=True)
 
@@ -89,7 +98,9 @@ takedowns = TakedownList(bus=invalidation_bus)
 # rather than pretended away.
 interstitials = {}
 
-ids = SnowflakeGenerator(INSTANCE_ID)
+allocator = CodeAllocator(
+    build_generator(CODE_SCHEME, instance_id=INSTANCE_ID, length=CODE_LENGTH),
+    max_attempts=CODE_MAX_ATTEMPTS)
 cache = LruCache(capacity=50_000)
 # Started after the cache exists, and registered from sequence zero: a fresh
 # instance has an empty cache, so replaying the whole log is cheap and makes it
@@ -148,7 +159,8 @@ def enforce_limit(request: Request):
 
 @app.get("/healthz")
 def healthz():
-    return {"status": "ok", "instance": INSTANCE_ID, "link_backend": LINK_BACKEND}
+    return {"status": "ok", "instance": INSTANCE_ID, "link_backend": LINK_BACKEND,
+            "code_scheme": CODE_SCHEME, "code_length": CODE_LENGTH}
 
 
 @app.post("/admin/reset-metrics")
@@ -160,6 +172,8 @@ def reset_metrics():
     flight.collapsed = 0
     hits.recorded = 0
     hits.flushes = 0
+    allocator.allocated = 0
+    allocator.collisions = 0
     limiter.fail_open_count = 0
     limiter.error_count = 0
     return {"reset": True}
@@ -206,6 +220,7 @@ def metrics():
         "cache": cache.stats(),
         "singleflight_collapsed": flight.collapsed,
         "hit_counter": hits.stats(),
+        "codes": allocator.stats(),
         "limiter": limiter.stats(),
         "links": links.count(),
     }
@@ -224,14 +239,14 @@ def create_link(body: CreateRequest, request: Request):
                                                      "reason": verdict.reason,
                                                      "host": verdict.host})
 
-    code = ids.next_code()
     try:
-        link = links.create(code, body.target, body.ttl_seconds)
-    except KeyError:
-        # Should be unreachable: snowflake ids are unique without a check. If it
-        # ever fires, two instances share an INSTANCE_ID and that is an ops bug
-        # worth a 500 rather than a silent retry that would hide it.
-        raise HTTPException(status_code=500, detail="short code collision -- check INSTANCE_ID uniqueness")
+        # Retries on collision. Under snowflake a collision is an ops bug (two
+        # instances sharing an INSTANCE_ID) and the retry will keep failing;
+        # under random codes it is ordinary bad luck and the retry is the design.
+        # Either way, exhausting the attempts is a 500 rather than a silent loop.
+        link = allocator.allocate(links, body.target, body.ttl_seconds)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
     if verdict.action == INTERSTITIAL:
         interstitials[link.code] = verdict.reason
     return CreateResponse(code=link.code, target=link.target, expires_ms=link.expires_ms,
